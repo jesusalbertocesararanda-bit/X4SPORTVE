@@ -1,0 +1,383 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle, Loader2 } from 'lucide-react';
+import { AuditView } from './components/AuditView';
+import { DashboardView } from './components/DashboardView';
+import { ExcelImportModal } from './components/ExcelImportModal';
+import { FinanceView } from './components/FinanceView';
+import { InventoryView } from './components/InventoryView';
+import { PurchasesView } from './components/PurchasesView';
+import { SalesView } from './components/SalesView';
+import { StatsView } from './components/StatsView';
+import { TopNav } from './components/TopNav';
+import { createInitialState } from './data/initialState';
+import type { AppState, PartnerName, PaymentMethod, TabId } from './types/erp';
+import { fetchVenezuelaExchangeRates } from './utils/exchangeRatesApi';
+import {
+  adjustInventoryPhysicalCount,
+  applyAuditAdjustments,
+  collectReceivable,
+  createImportOrder,
+  getLowStockItems,
+  receiveImportBatch,
+  reconcileCashOnHand,
+  registerCapitalInjection,
+  registerMultiItemSale,
+  registerOperatingExpense,
+  reinvestPartnerDividends,
+  round2,
+  updateExchangeRates,
+} from './utils/finance';
+import type {
+  ActionResult,
+  AdjustInventoryCountInput,
+  ApplyAuditAdjustmentsInput,
+  ReceiveImportBatchInput,
+  ReconcileCashInput,
+  RegisterCapitalInjectionInput,
+  RegisterImportBatchInput,
+  RegisterMultiSaleInput,
+  RegisterOperatingExpenseInput,
+} from './utils/finance';
+import {
+  formatFirebaseError,
+  purgeAllDataInFirebase,
+  purgeLegacyLocalStorage,
+  resetErpStateInFirebase,
+  subscribeErpState,
+  writeErpState,
+  writeExchangeRatesOnly,
+} from './utils/firebaseRealtime';
+
+export interface RateSyncInfo {
+  status: 'idle' | 'loading' | 'synced' | 'error';
+  message?: string;
+}
+
+export default function App() {
+  const [state, setState] = useState<AppState>(() => createInitialState());
+  const [isHydratingDb, setIsHydratingDb] = useState(true);
+  const [dbError, setDbError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<TabId>('dashboard');
+  const [rateSync, setRateSync] = useState<RateSyncInfo>({ status: 'idle' });
+  const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
+
+  // Limpiar cualquier dato fantasma en localStorage y suscribir en tiempo real (onValue) a Firebase RTDB
+  useEffect(() => {
+    purgeLegacyLocalStorage();
+    const unsubscribe = subscribeErpState(
+      (remoteState) => {
+        setState(remoteState);
+        setIsHydratingDb(false);
+        setDbError(null);
+      },
+      (errorMessage) => {
+        setIsHydratingDb(false);
+        setDbError(errorMessage);
+      },
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  const commitState = useCallback(
+    (res: ActionResult): { ok: boolean; error?: string } => {
+      if (!res.ok) {
+        return { ok: false, error: res.error };
+      }
+
+      setState(res.state);
+      void writeErpState(res.state)
+        .then(() => {
+          setDbError(null);
+        })
+        .catch((err: unknown) => {
+          setDbError(formatFirebaseError(err));
+        });
+
+      return { ok: true };
+    },
+    [],
+  );
+
+  const hasBootRateSyncRef = useRef(false);
+
+  const syncRatesFromApi = useCallback(async () => {
+    setRateSync({ status: 'loading', message: 'Consultando tasas BCV / USDT...' });
+    const result = await fetchVenezuelaExchangeRates();
+    if (result.ok && result.bcv && result.usdt) {
+      const cleanBcv = round2(result.bcv);
+      const cleanUsdt = round2(result.usdt);
+      const nextRates: AppState['exchangeRates'] = {
+        bcv: cleanBcv,
+        usdt: cleanUsdt,
+        updatedAt: new Date().toISOString(),
+        source: 'api',
+      };
+
+      setState((prev) => ({
+        ...prev,
+        exchangeRates: nextRates,
+      }));
+
+      void writeExchangeRatesOnly(nextRates)
+        .then(() => setDbError(null))
+        .catch((err: unknown) => {
+          setDbError(formatFirebaseError(err));
+        });
+
+      setRateSync({
+        status: 'synced',
+        message: `Tasas sincronizadas vía ${result.providerLabel ?? 'API pública'}.`,
+      });
+      return { ok: true, bcv: cleanBcv, usdt: cleanUsdt };
+    }
+
+    setRateSync({
+      status: 'error',
+      message:
+        result.error ??
+        'No se pudo sincronizar automáticamente; usando tasas guardadas.',
+    });
+    return { ok: false, error: result.error };
+  }, []);
+
+  // Esperar a que Firebase entregue el estado inicial antes de sincronizar tasas en vivo
+  useEffect(() => {
+    if (isHydratingDb || hasBootRateSyncRef.current) return;
+    hasBootRateSyncRef.current = true;
+
+    let active = true;
+    setRateSync({ status: 'loading', message: 'Consultando tasas BCV / USDT...' });
+
+    void fetchVenezuelaExchangeRates().then((result) => {
+      if (!active) return;
+      if (result.ok && result.bcv && result.usdt) {
+        const cleanBcv = round2(result.bcv);
+        const cleanUsdt = round2(result.usdt);
+        const nextRates: AppState['exchangeRates'] = {
+          bcv: cleanBcv,
+          usdt: cleanUsdt,
+          updatedAt: new Date().toISOString(),
+          source: 'api',
+        };
+
+        setState((prev) => {
+          if (
+            prev.exchangeRates.bcv === cleanBcv &&
+            prev.exchangeRates.usdt === cleanUsdt
+          ) {
+            return prev;
+          }
+          return {
+            ...prev,
+            exchangeRates: nextRates,
+          };
+        });
+
+        void writeExchangeRatesOnly(nextRates).catch((err: unknown) => {
+          if (!active) return;
+          setDbError(formatFirebaseError(err));
+        });
+
+        setRateSync({
+          status: 'synced',
+          message: `Tasas sincronizadas vía ${result.providerLabel ?? 'API pública'}.`,
+        });
+      } else {
+        setRateSync({
+          status: 'error',
+          message:
+            result.error ??
+            'Sin respuesta de API pública; puedes editar las tasas manualmente.',
+        });
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [isHydratingDb]);
+
+  const lowStockCount = getLowStockItems(state, 2).length;
+  const pendingReceivablesCount = state.receivables.length;
+
+  const handleUpdateRates = (bcv: number, usdt: number) => {
+    const res = updateExchangeRates(state, bcv, usdt, 'manual');
+    if (res.ok) {
+      setState(res.state);
+      void writeExchangeRatesOnly(res.state.exchangeRates)
+        .then(() => setDbError(null))
+        .catch((err: unknown) => setDbError(formatFirebaseError(err)));
+      setRateSync({
+        status: 'idle',
+        message: 'Ajuste manual guardado.',
+      });
+    }
+    return { ok: res.ok, error: res.error };
+  };
+
+  const handleRegisterMultiSale = (input: RegisterMultiSaleInput) =>
+    commitState(registerMultiItemSale(state, input));
+
+  const handleRegisterImportBatch = (input: RegisterImportBatchInput) =>
+    commitState(createImportOrder(state, input));
+
+  const handleReceiveImportBatch = (input: ReceiveImportBatchInput) =>
+    commitState(receiveImportBatch(state, input));
+
+  const handleCollectReceivable = (
+    receivableId: string,
+    paymentMethod: PaymentMethod,
+    amountPaid?: number,
+  ) =>
+    commitState(
+      collectReceivable(state, receivableId, paymentMethod, amountPaid),
+    );
+
+  const handleReinvestDividends = (partner: PartnerName) =>
+    commitState(reinvestPartnerDividends(state, partner));
+
+  const handleRegisterOperatingExpense = (
+    input: RegisterOperatingExpenseInput,
+  ) => commitState(registerOperatingExpense(state, input));
+
+  const handleRegisterCapitalInjection = (
+    input: RegisterCapitalInjectionInput,
+  ) => commitState(registerCapitalInjection(state, input));
+
+  const handleReconcileCash = (input: ReconcileCashInput) =>
+    commitState(reconcileCashOnHand(state, input));
+
+  const handleAdjustInventoryCount = (input: AdjustInventoryCountInput) =>
+    commitState(adjustInventoryPhysicalCount(state, input));
+
+  const handleApplyAuditAdjustments = (input: ApplyAuditAdjustmentsInput) =>
+    commitState(applyAuditAdjustments(state, input));
+
+  const handleResetDemoData = () => {
+    void resetErpStateInFirebase()
+      .then((fresh) => {
+        setState(fresh);
+        setDbError(null);
+      })
+      .catch((err: unknown) => {
+        setDbError(formatFirebaseError(err));
+      });
+  };
+
+  const handleApplyImportedState = async (nextState: AppState) => {
+    purgeLegacyLocalStorage();
+    setState(nextState);
+    await writeErpState(nextState);
+    setDbError(null);
+  };
+
+  const handlePurgeGhostData = async () => {
+    const clean = await purgeAllDataInFirebase(
+      state.exchangeRates.bcv,
+      state.exchangeRates.usdt,
+    );
+    setState(clean);
+    setDbError(null);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#060B16] text-slate-100 flex flex-col">
+      <TopNav
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        onOpenExcelImport={() => setIsExcelModalOpen(true)}
+        lowStockCount={lowStockCount}
+        pendingReceivablesCount={pendingReceivablesCount}
+      />
+
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
+        {dbError && (
+          <div
+            role="alert"
+            className="mb-6 flex items-start gap-2.5 rounded-xl border border-red-500/35 bg-red-500/10 px-4 py-3 text-xs font-medium text-red-200"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" aria-hidden="true" />
+            <span>{dbError}</span>
+          </div>
+        )}
+
+        {isHydratingDb ? (
+          <div
+            className="flex min-h-[320px] flex-col items-center justify-center gap-3 rounded-xl border border-slate-800 bg-[#0D1526] p-8 text-center"
+            role="status"
+          >
+            <Loader2 className="h-7 w-7 animate-spin text-blue-400" aria-hidden="true" />
+            <p className="text-sm font-medium text-slate-200">
+              Cargando datos sincronizados de X4SPORT...
+            </p>
+          </div>
+        ) : (
+          <>
+            {activeTab === 'dashboard' && (
+              <DashboardView
+                state={state}
+                rateSync={rateSync}
+                onSyncRatesFromApi={syncRatesFromApi}
+                onUpdateRates={handleUpdateRates}
+                onNavigate={setActiveTab}
+              />
+            )}
+
+            {activeTab === 'ventas' && (
+              <SalesView
+                state={state}
+                onRegisterMultiSale={handleRegisterMultiSale}
+              />
+            )}
+
+            {activeTab === 'inventario' && (
+              <InventoryView
+                state={state}
+                onAdjustInventoryCount={handleAdjustInventoryCount}
+              />
+            )}
+
+            {activeTab === 'auditoria' && (
+              <AuditView
+                state={state}
+                onApplyAuditAdjustments={handleApplyAuditAdjustments}
+              />
+            )}
+
+            {activeTab === 'compras' && (
+              <PurchasesView
+                state={state}
+                onRegisterImportBatch={handleRegisterImportBatch}
+                onReceiveImportBatch={handleReceiveImportBatch}
+              />
+            )}
+
+            {activeTab === 'finanzas' && (
+              <FinanceView
+                state={state}
+                onCollectReceivable={handleCollectReceivable}
+                onReinvestDividends={handleReinvestDividends}
+                onRegisterOperatingExpense={handleRegisterOperatingExpense}
+                onRegisterCapitalInjection={handleRegisterCapitalInjection}
+                onReconcileCash={handleReconcileCash}
+                onResetDemoData={handleResetDemoData}
+              />
+            )}
+
+            {activeTab === 'estadisticas' && <StatsView state={state} />}
+          </>
+        )}
+      </main>
+
+      <ExcelImportModal
+        isOpen={isExcelModalOpen}
+        onClose={() => setIsExcelModalOpen(false)}
+        onApplyImportedState={handleApplyImportedState}
+        onPurgeGhostData={handlePurgeGhostData}
+      />
+    </div>
+  );
+}

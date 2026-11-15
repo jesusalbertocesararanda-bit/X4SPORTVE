@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>X4SPORT · Gestión Operativa y Financiera</title>
+    <meta name="description" content="Plataforma de gestión operativa, inventario, ventas, compras y matriz financiera de 4 capas para X4SPORT." />
+    <meta property="og:title" content="X4SPORT · Gestión Operativa y Financiera" />
+    <meta property="og:description" content="Plataforma de gestión operativa, inventario, ventas, compras y matriz financiera de 4 capas para X4SPORT." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body class="bg-[#060B16] text-slate-100 antialiased selection:bg-blue-600/30 selection:text-white">
+    <div id="root"></div>
+    <!-- SheetJS (xlsx) via CDN para importación y mapeo automático de Excel -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <!-- Firebase SDK (App & Realtime Database) via CDN -->
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
