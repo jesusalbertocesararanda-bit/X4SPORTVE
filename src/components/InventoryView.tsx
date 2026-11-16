@@ -113,7 +113,7 @@ export function InventoryView({
             Catálogo e Inventario FIFO
           </h1>
           <p className="mt-1 text-sm text-slate-400">
-            Control cronológico por lotes (First-In, First-Out), PVP en USD y ajustes por conteo físico.
+            Control cronológico por lotes (First-In, First-Out), PVP en USDT y ajustes por conteo físico.
           </p>
         </div>
 
@@ -411,7 +411,7 @@ export function InventoryView({
                   <th scope="col" className="px-5 py-3">Talla</th>
                   <th scope="col" className="px-5 py-3 text-right">Stock</th>
                   <th scope="col" className="px-5 py-3 text-right">COGS FIFO</th>
-                  <th scope="col" className="px-5 py-3 text-right">PVP ($)</th>
+                  <th scope="col" className="px-5 py-3 text-right">PVP (USDT)</th>
                   <th scope="col" className="px-5 py-3 text-right">Valor Lotes</th>
                 </tr>
               </thead>

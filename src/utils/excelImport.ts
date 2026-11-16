@@ -1,6 +1,13 @@
 import {
   createEmptyCleanState,
   getDefaultSalePrice,
+  INITIAL_CAPITAL_INJECTIONS,
+  INITIAL_CASH_ON_HAND,
+  INITIAL_HISTORICAL_NET_PROFIT,
+  INITIAL_OPERATING_EXPENSES,
+  INITIAL_RECEIVABLES,
+  INITIAL_TOTAL_CAPITAL_INJECTED,
+  INITIAL_TOTAL_OPERATING_EXPENSES,
 } from '../data/initialState';
 import type {
   AppState,
@@ -80,6 +87,7 @@ export interface ComprasColumnMap {
   unitCost: number;
   salePrice: number;
   date: number;
+  usdtRate: number;
   bcvRate: number;
   reference: number;
 }
@@ -126,6 +134,8 @@ export interface ExcelImportPreview {
   injectionsCount: number;
   expensesTotal: number;
   expensesCount: number;
+  historicalNetProfit: number;
+  usdtRate: number;
   bcvRate: number;
   warnings: string[];
 }
@@ -137,7 +147,12 @@ export interface ExcelImportResult {
   state?: AppState;
 }
 
-export const DEFAULT_EXCEL_CASH = 120.19;
+export interface ExcelImportOptions {
+  currentBcv?: number;
+  currentUsdt?: number;
+}
+
+export const DEFAULT_EXCEL_CASH = INITIAL_CASH_ON_HAND;
 export const DEFAULT_EXCEL_RECEIVABLES = 263.5;
 
 function normalizeText(value: unknown): string {
@@ -415,6 +430,7 @@ interface ParsedPurchaseLine {
   unitCost: number;
   salePrice: number;
   date: string;
+  usdtRate: number | null;
   bcvRate: number | null;
   reference: string;
 }
@@ -440,6 +456,7 @@ function parseComprasSheet(
 ): {
   lines: ParsedPurchaseLine[];
   mappedLabels: Record<string, string>;
+  latestUsdtRate: number | null;
   latestBcvRate: number | null;
 } {
   const headerIdx = findHeaderRow(rows, [
@@ -455,7 +472,12 @@ function parseComprasSheet(
     warnings.push(
       'No se detectaron encabezados claros en la pestaña Compras (se requiere al menos Modelo y Cantidad/Costo).',
     );
-    return { lines: [], mappedLabels: {}, latestBcvRate: null };
+    return {
+      lines: [],
+      mappedLabels: {},
+      latestUsdtRate: null,
+      latestBcvRate: null,
+    };
   }
 
   const rawHeaders = (rows[headerIdx] ?? []).map((c) => String(c ?? '').trim());
@@ -485,6 +507,10 @@ function parseComprasSheet(
     unitCost: findColumnIndex(
       normHeaders,
       [
+        'costo unitario (usdt)',
+        'costo unitario usdt',
+        'costo usdt',
+        'costo unitario ($)',
         'costo unitario',
         'costo',
         'cogs',
@@ -494,12 +520,12 @@ function parseComprasSheet(
         'landed cost',
         'unit cost',
       ],
-      ['costo unit', 'cogs', 'fabrica', 'compra', 'landed', 'costo'],
+      ['costo unitario (usdt)', 'costo usdt', 'costo unit', 'cogs', 'fabrica', 'compra', 'landed', 'costo'],
       ['total'],
     ),
     salePrice: findColumnIndex(
       normHeaders,
-      ['precio de venta', 'precio venta', 'pvp', 'precio usd', 'precio'],
+      ['precio de venta (usdt)', 'precio venta usdt', 'precio de venta', 'precio venta', 'pvp', 'precio usdt', 'precio usd', 'precio'],
       ['precio venta', 'precio de venta', 'pvp', 'precio'],
       ['costo', 'compra', 'fabrica', 'total'],
     ),
@@ -508,10 +534,17 @@ function parseComprasSheet(
       ['fecha', 'fecha compra', 'fecha ingreso', 'date'],
       ['fecha', 'date'],
     ),
+    usdtRate: findColumnIndex(
+      normHeaders,
+      ['tasa usdt', 'cambio usdt', 'usdt', 'tasa paralelo', 'paralelo'],
+      ['tasa usdt', 'usdt', 'paralelo'],
+      ['costo', 'precio', 'total', 'monto', 'venta', 'bcv'],
+    ),
     bcvRate: findColumnIndex(
       normHeaders,
-      ['tasa bcv', 'bcv', 'cambio bcv', 'dolar bcv', 'tasa'],
-      ['bcv', 'tasa'],
+      ['tasa bcv', 'bcv', 'cambio bcv', 'dolar bcv'],
+      ['bcv'],
+      ['usdt', 'costo', 'precio', 'total', 'monto'],
     ),
     reference: findColumnIndex(
       normHeaders,
@@ -532,10 +565,16 @@ function parseComprasSheet(
     warnings.push(
       'La pestaña Compras necesita columnas identificables de Modelo y Cantidad.',
     );
-    return { lines: [], mappedLabels, latestBcvRate: null };
+    return {
+      lines: [],
+      mappedLabels,
+      latestUsdtRate: null,
+      latestBcvRate: null,
+    };
   }
 
   const lines: ParsedPurchaseLine[] = [];
+  let latestUsdtRate: number | null = null;
   let latestBcvRate: number | null = null;
 
   for (let r = headerIdx + 1; r < rows.length; r++) {
@@ -581,6 +620,13 @@ function parseComprasSheet(
         ? parseSpreadsheetDate(row[map.date])
         : '2026-11-01';
 
+    const parsedUsdt =
+      map.usdtRate >= 0 ? parseSpreadsheetNumber(row[map.usdtRate]) : null;
+    const usdtRate = parsedUsdt !== null && parsedUsdt > 1 ? round2(parsedUsdt) : null;
+    if (usdtRate !== null) {
+      latestUsdtRate = usdtRate;
+    }
+
     const parsedBcv =
       map.bcvRate >= 0 ? parseSpreadsheetNumber(row[map.bcvRate]) : null;
     const bcvRate = parsedBcv !== null && parsedBcv > 1 ? round2(parsedBcv) : null;
@@ -601,12 +647,13 @@ function parseComprasSheet(
       unitCost,
       salePrice,
       date,
+      usdtRate,
       bcvRate,
       reference,
     });
   }
 
-  return { lines, mappedLabels, latestBcvRate };
+  return { lines, mappedLabels, latestUsdtRate, latestBcvRate };
 }
 
 function parseVentasSheet(
@@ -806,6 +853,7 @@ interface ParsedFinanzasSheet {
   receivables: ReceivableItem[];
   capitalInjections: CapitalInjectionRecord[];
   operatingExpenses: OperatingExpenseRecord[];
+  historicalNetProfit: number;
   bcvRate: number | null;
   usdtRate: number | null;
 }
@@ -813,6 +861,9 @@ interface ParsedFinanzasSheet {
 function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
   let cashFound: number | null = null;
   let totalReceivablesCell: number | null = null;
+  let totalInjectionsCell: number | null = null;
+  let totalExpensesCell: number | null = null;
+  let historicalNetProfitFound: number | null = null;
   let bcvRate: number | null = null;
   let usdtRate: number | null = null;
 
@@ -823,19 +874,10 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
   if (!rows || rows.length === 0) {
     return {
       cashOnHand: DEFAULT_EXCEL_CASH,
-      receivables: [
-        {
-          id: 'rec-excel-init',
-          debtor: 'Cuentas por Cobrar Consolidadas',
-          amount: DEFAULT_EXCEL_RECEIVABLES,
-          originalAmount: DEFAULT_EXCEL_RECEIVABLES,
-          paidAmount: 0,
-          createdAt: new Date().toISOString(),
-          note: 'Saldo inicial real inicializado desde Finanzas / Resumen',
-        },
-      ],
-      capitalInjections: [],
-      operatingExpenses: [],
+      receivables: INITIAL_RECEIVABLES.map((item) => ({ ...item })),
+      capitalInjections: INITIAL_CAPITAL_INJECTIONS.map((item) => ({ ...item })),
+      operatingExpenses: INITIAL_OPERATING_EXPENSES.map((item) => ({ ...item })),
+      historicalNetProfit: INITIAL_HISTORICAL_NET_PROFIT,
       bcvRate: null,
       usdtRate: null,
     };
@@ -861,7 +903,15 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
 
     // Detectar encabezados de subtablas dentro de Finanzas / Resumen
     const hasMontoCol = normRow.some(
-      (c) => c === 'monto' || c === 'saldo' || c === 'importe' || c.includes('monto ($)') || c === 'usd',
+      (c) =>
+        c === 'monto' ||
+        c === 'saldo' ||
+        c === 'importe' ||
+        c.includes('monto ($)') ||
+        c.includes('monto (usdt)') ||
+        c.includes('monto usdt') ||
+        c === 'usd' ||
+        c === 'usdt',
     );
     const hasDeudorCol = normRow.some(
       (c) => c.includes('deudor') || c.includes('cliente'),
@@ -877,7 +927,7 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
       currentSection = 'cxc';
       sectionColName = findColumnIndex(normRow, ['deudor', 'cliente'], ['deudor', 'cliente']);
       sectionColConcept = findColumnIndex(normRow, ['nota', 'concepto', 'detalle'], ['nota', 'concepto', 'detalle']);
-      sectionColAmount = findColumnIndex(normRow, ['monto', 'saldo', 'importe', 'usd'], ['monto', 'saldo', 'importe']);
+      sectionColAmount = findColumnIndex(normRow, ['monto (usdt)', 'monto ($)', 'monto', 'saldo', 'importe', 'usdt', 'usd'], ['monto', 'saldo', 'importe']);
       sectionColDate = findColumnIndex(normRow, ['fecha'], ['fecha']);
       continue;
     }
@@ -886,7 +936,7 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
       currentSection = 'injection';
       sectionColName = findColumnIndex(normRow, ['aportante', 'origen', 'socio'], ['aportante', 'origen', 'socio']);
       sectionColConcept = findColumnIndex(normRow, ['concepto', 'detalle', 'nota'], ['concepto', 'detalle', 'nota']);
-      sectionColAmount = findColumnIndex(normRow, ['monto', 'importe', 'usd'], ['monto', 'importe']);
+      sectionColAmount = findColumnIndex(normRow, ['monto (usdt)', 'monto ($)', 'monto', 'importe', 'usdt', 'usd'], ['monto', 'importe']);
       sectionColMethod = findColumnIndex(normRow, ['metodo', 'via'], ['metodo', 'via']);
       sectionColDate = findColumnIndex(normRow, ['fecha'], ['fecha']);
       continue;
@@ -895,7 +945,7 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
     if (hasMontoCol && hasConceptoCol && (joined.includes('gasto') || joined.includes('caja chica') || joined.includes('egreso'))) {
       currentSection = 'expense';
       sectionColConcept = findColumnIndex(normRow, ['concepto', 'gasto', 'descripcion'], ['concepto', 'gasto', 'descripcion']);
-      sectionColAmount = findColumnIndex(normRow, ['monto', 'importe', 'usd'], ['monto', 'importe']);
+      sectionColAmount = findColumnIndex(normRow, ['monto (usdt)', 'monto ($)', 'monto', 'importe', 'usdt', 'usd'], ['monto', 'importe']);
       sectionColMethod = findColumnIndex(normRow, ['metodo', 'via'], ['metodo', 'via']);
       sectionColDate = findColumnIndex(normRow, ['fecha'], ['fecha']);
       continue;
@@ -940,7 +990,7 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
             paymentMethod:
               sectionColMethod >= 0
                 ? normalizeSinglePaymentMethod(row[sectionColMethod])
-                : 'Efectivo ($)',
+                : 'Binance USDT',
             destination: 'cashOnly' as CapitalInjectionDestination,
             createdAt,
           });
@@ -955,7 +1005,7 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
             paymentMethod:
               sectionColMethod >= 0
                 ? normalizeSinglePaymentMethod(row[sectionColMethod])
-                : 'Efectivo ($)',
+                : 'Binance USDT',
             createdAt,
           });
           continue;
@@ -1003,6 +1053,40 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
       continue;
     }
 
+    if (
+      label.includes('capital inyectado') ||
+      label.includes('inyeccion total') ||
+      label.includes('total inyectado')
+    ) {
+      if (rightNumeric !== null && rightNumeric >= 0) {
+        totalInjectionsCell = round2(rightNumeric);
+      }
+      continue;
+    }
+
+    if (
+      label.includes('gastos operativos totales') ||
+      label.includes('gasto operativo total') ||
+      label === 'gastos operativos'
+    ) {
+      if (rightNumeric !== null && rightNumeric >= 0) {
+        totalExpensesCell = round2(rightNumeric);
+      }
+      continue;
+    }
+
+    if (
+      label.includes('ganancia neta historica') ||
+      label.includes('utilidad neta historica') ||
+      label === 'ganancia neta' ||
+      label === 'utilidad neta'
+    ) {
+      if (rightNumeric !== null) {
+        historicalNetProfitFound = round2(rightNumeric);
+      }
+      continue;
+    }
+
     if (label.includes('tasa bcv') || label === 'bcv') {
       if (rightNumeric !== null && rightNumeric > 1) {
         bcvRate = round2(rightNumeric);
@@ -1031,7 +1115,7 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
           contributor,
           concept,
           amount: round2(amt),
-          paymentMethod: 'Efectivo ($)',
+          paymentMethod: 'Binance USDT',
           destination: 'cashOnly',
           createdAt: new Date().toISOString(),
         });
@@ -1051,7 +1135,7 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
           concept,
           amount: round2(amt),
           source: 'cashOnHand',
-          paymentMethod: 'Efectivo ($)',
+          paymentMethod: 'Binance USDT',
           createdAt: new Date().toISOString(),
         });
       }
@@ -1081,28 +1165,69 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
   const finalCash = cashFound !== null ? cashFound : DEFAULT_EXCEL_CASH;
   let finalReceivables = receivables;
   if (finalReceivables.length === 0) {
-    const recAmt =
-      totalReceivablesCell !== null ? totalReceivablesCell : DEFAULT_EXCEL_RECEIVABLES;
-    if (recAmt > 0) {
+    if (
+      totalReceivablesCell === null ||
+      Math.abs(totalReceivablesCell - DEFAULT_EXCEL_RECEIVABLES) < 0.01
+    ) {
+      finalReceivables = INITIAL_RECEIVABLES.map((item) => ({ ...item }));
+    } else if (totalReceivablesCell > 0) {
       finalReceivables = [
         {
           id: 'rec-excel-summary',
           debtor: 'Saldo Consolidado CxC (Excel)',
-          amount: recAmt,
-          originalAmount: recAmt,
+          amount: totalReceivablesCell,
+          originalAmount: totalReceivablesCell,
           paidAmount: 0,
           createdAt: new Date().toISOString(),
-          note: 'Extraído / inicializado desde Finanzas / Resumen',
+          note: 'Extraído desde Finanzas - Resumen',
         },
       ];
     }
   }
 
+  let finalInjections = capitalInjections;
+  if (finalInjections.length === 0) {
+    const injAmt =
+      totalInjectionsCell !== null
+        ? totalInjectionsCell
+        : INITIAL_TOTAL_CAPITAL_INJECTED;
+    if (injAmt > 0) {
+      finalInjections = [
+        {
+          ...INITIAL_CAPITAL_INJECTIONS[0],
+          amount: injAmt,
+        },
+      ];
+    }
+  }
+
+  let finalExpenses = operatingExpenses;
+  if (finalExpenses.length === 0) {
+    const expAmt =
+      totalExpensesCell !== null
+        ? totalExpensesCell
+        : INITIAL_TOTAL_OPERATING_EXPENSES;
+    if (expAmt > 0) {
+      finalExpenses = [
+        {
+          ...INITIAL_OPERATING_EXPENSES[0],
+          amount: expAmt,
+        },
+      ];
+    }
+  }
+
+  const historicalNetProfit =
+    historicalNetProfitFound !== null
+      ? historicalNetProfitFound
+      : INITIAL_HISTORICAL_NET_PROFIT;
+
   return {
     cashOnHand: finalCash,
     receivables: finalReceivables,
-    capitalInjections,
-    operatingExpenses,
+    capitalInjections: finalInjections,
+    operatingExpenses: finalExpenses,
+    historicalNetProfit,
     bcvRate,
     usdtRate,
   };
@@ -1114,6 +1239,7 @@ function parseFinanzasSheet(rows: SheetMatrix | null): ParsedFinanzasSheet {
  */
 export function buildErpStateFromSheets(
   sheetsMap: Record<string, SheetMatrix>,
+  options?: ExcelImportOptions,
 ): ExcelImportResult {
   const sheetNames = Object.keys(sheetsMap);
   if (sheetNames.length === 0) {
@@ -1159,7 +1285,7 @@ export function buildErpStateFromSheets(
 
   const comprasParsed = comprasSheetName
     ? parseComprasSheet(sheetsMap[comprasSheetName] ?? [], warnings)
-    : { lines: [], mappedLabels: {}, latestBcvRate: null };
+    : { lines: [], mappedLabels: {}, latestUsdtRate: null, latestBcvRate: null };
 
   const ventasParsed = ventasSheetName
     ? parseVentasSheet(sheetsMap[ventasSheetName] ?? [], warnings)
@@ -1173,6 +1299,19 @@ export function buildErpStateFromSheets(
   const sortedCompras = [...comprasParsed.lines].sort((a, b) =>
     a.date.localeCompare(b.date),
   );
+
+  const effectiveBcv =
+    finanzasParsed.bcvRate ??
+    comprasParsed.latestBcvRate ??
+    options?.currentBcv ??
+    46.5;
+  const effectiveUsdt =
+    finanzasParsed.usdtRate ??
+    comprasParsed.latestUsdtRate ??
+    options?.currentUsdt ??
+    54.2;
+  const hasExcelUsdt =
+    finanzasParsed.usdtRate !== null || comprasParsed.latestUsdtRate !== null;
 
   const inventoryMap = new Map<string, InventoryItem>();
   const purchaseRecords: PurchaseRecord[] = [];
@@ -1193,6 +1332,7 @@ export function buildErpStateFromSheets(
       initialQuantity: line.quantity,
       remainingQuantity: line.quantity,
       unitCost: line.unitCost,
+      usdtRate: line.usdtRate ?? effectiveUsdt,
     };
 
     totalComprasUnits += line.quantity;
@@ -1259,6 +1399,9 @@ export function buildErpStateFromSheets(
     const totalCost = round2(
       grpLines.reduce((s, l) => s + l.quantity * l.unitCost, 0),
     );
+    const batchUsdtRate =
+      [...grpLines].reverse().find((l) => l.usdtRate !== null)?.usdtRate ??
+      effectiveUsdt;
     purchaseBatches.unshift({
       id: `batch-xlsx-${batchSeq++}`,
       status: 'RECIBIDO EN BODEGA',
@@ -1274,6 +1417,7 @@ export function buildErpStateFromSheets(
       totalFreightCost: 0,
       freightPerUnit: 0,
       totalLandedCost: totalCost,
+      usdtRate: batchUsdtRate,
       items: grpLines.map((l) => ({
         team: inferTeamCategory(l.model),
         model: l.model,
@@ -1294,11 +1438,8 @@ export function buildErpStateFromSheets(
     });
   }
 
-  // Motor FIFO cronológico sobre Ventas
+  // Motor FIFO cronológico sobre Ventas (NO modifica cashOnHand histórico)
   const inventoryList = Array.from(inventoryMap.values());
-  const effectiveBcv =
-    finanzasParsed.bcvRate ?? comprasParsed.latestBcvRate ?? 46.5;
-  const effectiveUsdt = finanzasParsed.usdtRate ?? 54.2;
 
   const cleanState = createEmptyCleanState(
     finanzasParsed.cashOnHand,
@@ -1478,7 +1619,7 @@ export function buildErpStateFromSheets(
       bcv: effectiveBcv,
       usdt: effectiveUsdt,
       updatedAt: nowIso,
-      source: 'manual',
+      source: hasExcelUsdt ? 'excel' : 'manual',
     },
     inventory: inventoryList,
     receivables: finanzasParsed.receivables,
@@ -1489,6 +1630,7 @@ export function buildErpStateFromSheets(
     operatingExpenses: finanzasParsed.operatingExpenses,
     capitalInjections: finanzasParsed.capitalInjections,
     inventoryAdjustments: [],
+    historicalNetProfit: finanzasParsed.historicalNetProfit,
     movements,
   };
 
@@ -1534,6 +1676,8 @@ export function buildErpStateFromSheets(
       injectionsCount: finalState.capitalInjections.length,
       expensesTotal,
       expensesCount: finalState.operatingExpenses.length,
+      historicalNetProfit: finanzasParsed.historicalNetProfit,
+      usdtRate: effectiveUsdt,
       bcvRate: effectiveBcv,
       warnings,
     },
@@ -1545,6 +1689,7 @@ export function buildErpStateFromSheets(
  */
 export async function parseExcelFileWithSheetJS(
   file: File,
+  options?: ExcelImportOptions,
 ): Promise<ExcelImportResult> {
   if (typeof window === 'undefined' || !window.XLSX) {
     return {
@@ -1569,7 +1714,7 @@ export async function parseExcelFileWithSheetJS(
         raw: true,
       }) as SheetMatrix;
     }
-    return buildErpStateFromSheets(sheetsMap);
+    return buildErpStateFromSheets(sheetsMap, options);
   } catch (err) {
     return {
       ok: false,
@@ -1582,7 +1727,7 @@ export async function parseExcelFileWithSheetJS(
 }
 
 /**
- * Genera y descarga una plantilla Excel oficial de respaldo compatible con el mapeador.
+ * Genera y descarga una plantilla Excel oficial de respaldo compatible con el mapeador 100% USDT.
  */
 export function downloadExcelTemplateWithSheetJS(): boolean {
   if (typeof window === 'undefined' || !window.XLSX) return false;
@@ -1596,14 +1741,15 @@ export function downloadExcelTemplateWithSheetJS(): boolean {
       'Versión',
       'Talla',
       'Cantidad',
-      'Costo Unitario ($)',
-      'Precio de Venta ($)',
+      'Costo Unitario (USDT)',
+      'Precio de Venta (USDT)',
+      'Tasa USDT',
       'Tasa BCV',
       'Referencia / Lote',
     ],
-    ['2026-11-01', 'Barcelona Local 25/26', 'Player', 'M', 10, 6.5, 30, 46.5, 'Lote Base'],
-    ['2026-11-01', 'Real Madrid Local 25/26', 'Fan', 'L', 12, 5.6, 25, 46.5, 'Lote Base'],
-    ['2026-11-05', 'Barcelona Retro 08/09', 'Retro', 'XL', 4, 6.8, 32, 46.5, 'Aéreo Nov'],
+    ['2026-08-15', 'Barcelona Local 25/26', 'Player', 'M', 10, 6.5, 30, 58.5, 46.5, 'Lote Agosto'],
+    ['2026-08-15', 'Real Madrid Local 25/26', 'Fan', 'L', 12, 5.6, 25, 58.5, 46.5, 'Lote Agosto'],
+    ['2026-11-05', 'Barcelona Retro 08/09', 'Retro', 'XL', 4, 6.8, 32, 61.2, 46.5, 'Lote Noviembre'],
   ];
 
   const ventasAoa = [
@@ -1615,26 +1761,32 @@ export function downloadExcelTemplateWithSheetJS(): boolean {
       'Cantidad',
       'Comprador',
       'Vendedor',
-      'Total ($)',
+      'Total (USDT)',
       'Estado',
       'Método de Pago',
     ],
-    ['2026-11-10', 'Barcelona Local 25/26', 'Player', 'M', 2, 'Carlos Pérez', 'Jesús', 60, 'Cobrado', 'Efectivo ($)'],
-    ['2026-11-12', 'Real Madrid Local 25/26', 'Fan', 'L', 1, 'María López', 'Josué', 25, 'Cobrado', 'Binance USDT'],
+    ['2026-11-10', 'Barcelona Local 25/26', 'Player', 'M', 2, 'Carlos Pérez', 'Jesús', 60, 'Cobrado', 'Binance USDT'],
+    ['2026-11-12', 'Real Madrid Local 25/26', 'Fan', 'L', 1, 'María López', 'Josué', 25, 'Cobrado', 'Efectivo ($)'],
   ];
 
   const finanzasAoa = [
-    ['Concepto / Indicador', 'Valor ($ / Tasa)'],
+    ['Concepto / Indicador', 'Valor (USDT / Tasa)'],
     ['Efectivo físico en caja', 120.19],
     ['Cuentas por cobrar', 263.5],
+    ['Capital inyectado total', 1912.35],
+    ['Gastos operativos totales', 624.0],
+    ['Ganancia neta histórica', 317.37],
+    ['Tasa USDT', 61.2],
     ['Tasa BCV', 46.5],
-    ['Tasa USDT', 54.2],
     [],
-    ['Aportante', 'Concepto Inyección', 'Monto ($)', 'Método', 'Fecha'],
-    ['Jesús', 'Aporte de liquidez inicial', 0, 'Efectivo ($)', '2026-11-01'],
-    [],
-    ['Concepto Gasto Operativo', 'Monto ($)', 'Método', 'Fecha'],
-    ['Bolsas y empaque', 0, 'Efectivo ($)', '2026-11-01'],
+    ['Deudor', 'Nota / Detalle', 'Monto (USDT)', 'Fecha'],
+    ['Gabriel', 'Saldo pendiente (USDT)', 150.0, '2026-11-01'],
+    ['Charles', 'Saldo pendiente (USDT)', 45.0, '2026-11-02'],
+    ['Hermano de Charles', 'Saldo pendiente (USDT)', 20.0, '2026-11-03'],
+    ['Suegra', 'Saldo pendiente (USDT)', 20.0, '2026-11-04'],
+    ['Jordy', 'Saldo pendiente (USDT)', 10.0, '2026-11-05'],
+    ['Barón', 'Saldo pendiente (USDT)', 10.0, '2026-11-06'],
+    ['Enyer', 'Saldo pendiente (USDT)', 8.5, '2026-11-07'],
   ];
 
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(comprasAoa), 'Compras');

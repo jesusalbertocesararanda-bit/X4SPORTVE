@@ -55,11 +55,14 @@ html = html.replace(
   () => `<script>${safeInlineJs}</script>\n  </body>`,
 );
 
+const netlifyDir = path.join(distDir, 'netlify');
 fs.mkdirSync(publicDir, { recursive: true });
+fs.mkdirSync(netlifyDir, { recursive: true });
 fs.writeFileSync(path.join(distDir, 'x4sport-standalone.html'), html, 'utf8');
 fs.writeFileSync(path.join(publicDir, 'x4sport-standalone.html'), html, 'utf8');
 fs.writeFileSync(path.join(distDir, 'x4sport-app.html'), html, 'utf8');
 fs.writeFileSync(path.join(publicDir, 'x4sport-app.html'), html, 'utf8');
+fs.writeFileSync(path.join(netlifyDir, 'index.html'), html, 'utf8');
 
 const sizeKb = (Buffer.byteLength(html, 'utf8') / 1024).toFixed(1);
-console.log(`Built standalone single-file HTML: x4sport-app.html & x4sport-standalone.html (${sizeKb} KB)`);
+console.log(`Built standalone single-file HTML: dist/netlify/index.html, x4sport-app.html & x4sport-standalone.html (${sizeKb} KB)`);

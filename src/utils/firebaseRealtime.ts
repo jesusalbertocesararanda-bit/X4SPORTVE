@@ -235,14 +235,17 @@ export async function resetErpStateInFirebase(): Promise<AppState> {
 
 /**
  * Elimina todo dato fantasma o de prueba en localStorage y Firebase RTDB,
- * dejando un estado completamente limpio listo para importar desde Excel.
+ * dejando un estado limpio con los saldos fijos iniciales en USDT ($120.19 caja,
+ * $263.50 CxC desglosada, $1,912.35 capital inyectado, $624.00 gastos y $317.37 ganancia neta histórica).
  */
 export async function purgeAllDataInFirebase(
   bcv = 46.5,
   usdt = 54.2,
+  source: ExchangeRates['source'] = 'manual',
 ): Promise<AppState> {
   purgeLegacyLocalStorage();
-  const clean = createEmptyCleanState(0, bcv, usdt);
+  const clean = createEmptyCleanState(undefined, bcv, usdt);
+  clean.exchangeRates.source = source;
   await writeErpState(clean);
   return clean;
 }

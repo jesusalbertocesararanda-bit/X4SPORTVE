@@ -438,7 +438,7 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
           Registro de Ventas Multi-Ítem (FIFO)
         </h1>
         <p className="mt-1 text-sm text-slate-400">
-          Precio automático en USD/USDT al seleccionar producto, ajuste rápido Al Mayor o Rebaja, cliente obligatorio y pagos simples o mixtos.
+          Precio automático en USDT al seleccionar producto, ajuste rápido Al Mayor o Rebaja, cliente obligatorio y pagos simples o mixtos.
         </p>
       </div>
 
@@ -537,7 +537,7 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                         htmlFor="sale-unit-price"
                         className="block text-xs font-medium text-slate-300"
                       >
-                        Precio unitario ($ / USDT)
+                        Precio unitario (USDT)
                       </label>
                       {activeSku && (
                         <span className="font-mono-num text-[11px] text-slate-400">
@@ -615,7 +615,7 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                               : 'text-slate-400 hover:text-white'
                           }`}
                         >
-                          Monto ($ USD)
+                          Monto (USDT)
                         </button>
                         <button
                           type="button"
@@ -975,7 +975,7 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                 <div className="space-y-3 rounded-lg border border-slate-700 bg-[#080E1C] p-3.5">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-semibold text-white">
-                      Desglose de Pago Mixto ($ USD)
+                      Desglose de Pago Mixto (USDT)
                     </span>
                     <span
                       className={`font-mono-num font-semibold ${
@@ -1202,7 +1202,7 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                     <th className="px-4 py-3">Vendedor</th>
                     <th className="px-4 py-3">Detalle de Prendas</th>
                     <th className="px-4 py-3">Método de Pago</th>
-                    <th className="px-4 py-3 text-right">Total $</th>
+                    <th className="px-4 py-3 text-right">Total (USDT)</th>
                     <th className="px-4 py-3 text-right">Estatus</th>
                   </tr>
                 </thead>

@@ -1,6 +1,7 @@
 import {
   createInitialState,
   getDefaultSalePrice,
+  INITIAL_HISTORICAL_NET_PROFIT,
   PARTNER_SHARES,
 } from '../data/initialState';
 import type {
@@ -95,6 +96,10 @@ export function formatUSD(amount: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(safe);
+}
+
+export function formatUSDT(amount: number): string {
+  return `${formatUSD(amount)} USDT`;
 }
 
 export function formatVES(amount: number): string {
@@ -643,6 +648,7 @@ export interface RegisterImportBatchInput {
   shippingType: ShippingType;
   totalFreightCost: number;
   fundingSource?: PurchaseFundingSource;
+  usdtRate?: number;
   items: BatchPurchaseLineInput[];
 }
 
@@ -803,6 +809,11 @@ export function createImportOrder(
     };
   });
 
+  const batchUsdtRate =
+    input.usdtRate && Number.isFinite(input.usdtRate) && input.usdtRate > 0
+      ? round2(input.usdtRate)
+      : state.exchangeRates.usdt;
+
   const batchRecord: PurchaseBatchRecord = {
     id: batchId,
     status: 'EN TRÁNSITO',
@@ -817,6 +828,7 @@ export function createImportOrder(
     totalFreightCost: estimatedFreightCost,
     freightPerUnit: freightPerUnitDisplay,
     totalLandedCost,
+    usdtRate: batchUsdtRate,
     items: batchItems,
     createdAt: now,
   };
@@ -988,6 +1000,7 @@ export function receiveImportBatch(
         initialQuantity: receivedQty,
         remainingQuantity: receivedQty,
         unitCost: exactLandedUnitCost,
+        usdtRate: targetBatch.usdtRate ?? state.exchangeRates.usdt,
       };
 
       let previousCogs: number | null = null;
@@ -1304,7 +1317,7 @@ export function updateExchangeRates(
   state: AppState,
   bcv: number,
   usdt: number,
-  source: 'api' | 'manual' = 'manual',
+  source: 'api' | 'manual' | 'excel' = 'manual',
 ): ActionResult {
   const cleanBcv = round2(bcv);
   const cleanUsdt = round2(usdt);
@@ -2058,6 +2071,11 @@ export function normalizeAppState(raw: unknown): AppState {
       inventoryAdjustments: toArray<InventoryAdjustmentRecord>(
         parsed.inventoryAdjustments,
       ),
+      historicalNetProfit:
+        typeof parsed.historicalNetProfit === 'number' &&
+        Number.isFinite(parsed.historicalNetProfit)
+          ? round2(parsed.historicalNetProfit)
+          : INITIAL_HISTORICAL_NET_PROFIT,
       funds: normalizedFunds,
       movements: toArray<AuditMovement>(parsed.movements),
     };

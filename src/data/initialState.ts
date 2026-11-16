@@ -1,7 +1,9 @@
 import type {
   AppState,
+  CapitalInjectionRecord,
   InventoryItem,
   JerseyVersion,
+  OperatingExpenseRecord,
   ReceivableItem,
 } from '../types/erp';
 
@@ -12,6 +14,9 @@ export const PARTNER_SHARES = {
 } as const;
 
 export const INITIAL_CASH_ON_HAND = 120.19;
+export const INITIAL_TOTAL_CAPITAL_INJECTED = 1912.35;
+export const INITIAL_TOTAL_OPERATING_EXPENSES = 624.0;
+export const INITIAL_HISTORICAL_NET_PROFIT = 317.37;
 
 export function getDefaultSalePrice(
   version: JerseyVersion,
@@ -24,12 +29,36 @@ export function getDefaultSalePrice(
 }
 
 export const INITIAL_RECEIVABLES: ReceivableItem[] = [
-  { id: 'rec-3', debtor: 'Enyer', amount: 8.5, createdAt: '2026-11-03T14:15:00.000Z', note: 'Restante camiseta' },
-  { id: 'rec-4', debtor: 'Suegra', amount: 20.0, createdAt: '2026-11-04T09:45:00.000Z', note: 'Saldo inicial pendiente' },
-  { id: 'rec-5', debtor: 'Jordy', amount: 20.0, createdAt: '2026-11-05T16:20:00.000Z', note: 'Saldo inicial pendiente' },
-  { id: 'rec-6', debtor: 'Gabriel', amount: 150.0, createdAt: '2026-11-06T18:00:00.000Z', note: 'Cuenta por cobrar lote' },
-  { id: 'rec-7', debtor: 'Amigo de Josué', amount: 20.0, createdAt: '2026-11-07T12:10:00.000Z', note: 'Saldo inicial pendiente' },
-  { id: 'rec-8', debtor: 'Charles', amount: 45.0, createdAt: '2026-11-08T15:00:00.000Z', note: 'Saldo inicial pendiente' },
+  { id: 'rec-gabriel', debtor: 'Gabriel', amount: 150.0, originalAmount: 150.0, paidAmount: 0, createdAt: '2026-11-01T12:00:00.000Z', note: 'Saldo pendiente (USDT)' },
+  { id: 'rec-charles', debtor: 'Charles', amount: 45.0, originalAmount: 45.0, paidAmount: 0, createdAt: '2026-11-02T12:00:00.000Z', note: 'Saldo pendiente (USDT)' },
+  { id: 'rec-hermano-charles', debtor: 'Hermano de Charles', amount: 20.0, originalAmount: 20.0, paidAmount: 0, createdAt: '2026-11-03T12:00:00.000Z', note: 'Saldo pendiente (USDT)' },
+  { id: 'rec-suegra', debtor: 'Suegra', amount: 20.0, originalAmount: 20.0, paidAmount: 0, createdAt: '2026-11-04T12:00:00.000Z', note: 'Saldo pendiente (USDT)' },
+  { id: 'rec-jordy', debtor: 'Jordy', amount: 10.0, originalAmount: 10.0, paidAmount: 0, createdAt: '2026-11-05T12:00:00.000Z', note: 'Saldo pendiente (USDT)' },
+  { id: 'rec-baron', debtor: 'Barón', amount: 10.0, originalAmount: 10.0, paidAmount: 0, createdAt: '2026-11-06T12:00:00.000Z', note: 'Saldo pendiente (USDT)' },
+  { id: 'rec-enyer', debtor: 'Enyer', amount: 8.5, originalAmount: 8.5, paidAmount: 0, createdAt: '2026-11-07T12:00:00.000Z', note: 'Saldo pendiente (USDT)' },
+];
+
+export const INITIAL_CAPITAL_INJECTIONS: CapitalInjectionRecord[] = [
+  {
+    id: 'inj-hist-base',
+    contributor: 'Socios X4SPORT',
+    concept: 'Capital inyectado total histórico acumulado',
+    amount: INITIAL_TOTAL_CAPITAL_INJECTED,
+    paymentMethod: 'Binance USDT',
+    destination: 'cashOnly',
+    createdAt: '2026-11-01T10:00:00.000Z',
+  },
+];
+
+export const INITIAL_OPERATING_EXPENSES: OperatingExpenseRecord[] = [
+  {
+    id: 'exp-hist-base',
+    concept: 'Gastos operativos totales históricos acumulados',
+    amount: INITIAL_TOTAL_OPERATING_EXPENSES,
+    source: 'cashOnHand',
+    paymentMethod: 'Binance USDT',
+    createdAt: '2026-11-01T10:00:00.000Z',
+  },
 ];
 
 type RawSeedItem = Omit<InventoryItem, 'fifoBatches' | 'salePrice'>;
@@ -103,9 +132,10 @@ export function createInitialState(): AppState {
     sales: [],
     purchases: [],
     purchaseBatches: [],
-    operatingExpenses: [],
-    capitalInjections: [],
+    operatingExpenses: INITIAL_OPERATING_EXPENSES.map((item) => ({ ...item })),
+    capitalInjections: INITIAL_CAPITAL_INJECTIONS.map((item) => ({ ...item })),
     inventoryAdjustments: [],
+    historicalNetProfit: INITIAL_HISTORICAL_NET_PROFIT,
     funds: {
       replacement: 0,
       commissions: 0,
@@ -128,7 +158,7 @@ export function createInitialState(): AppState {
 }
 
 export function createEmptyCleanState(
-  cashOnHand = 0,
+  cashOnHand = INITIAL_CASH_ON_HAND,
   bcv = 46.5,
   usdt = 54.2,
 ): AppState {
@@ -141,14 +171,15 @@ export function createEmptyCleanState(
       source: 'seed',
     },
     inventory: [],
-    receivables: [],
+    receivables: INITIAL_RECEIVABLES.map((item) => ({ ...item })),
     collectedReceivablesCount: 0,
     sales: [],
     purchases: [],
     purchaseBatches: [],
-    operatingExpenses: [],
-    capitalInjections: [],
+    operatingExpenses: INITIAL_OPERATING_EXPENSES.map((item) => ({ ...item })),
+    capitalInjections: INITIAL_CAPITAL_INJECTIONS.map((item) => ({ ...item })),
     inventoryAdjustments: [],
+    historicalNetProfit: INITIAL_HISTORICAL_NET_PROFIT,
     funds: {
       replacement: 0,
       commissions: 0,

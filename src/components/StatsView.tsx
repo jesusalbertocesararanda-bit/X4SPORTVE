@@ -133,7 +133,7 @@ export function StatsView({ state }: StatsViewProps) {
         ],
         datasets: [
           {
-            label: 'Acumulado ($ USD)',
+            label: 'Acumulado (USDT)',
             data: [
               state.funds.replacement,
               state.funds.commissions,
@@ -213,7 +213,7 @@ export function StatsView({ state }: StatsViewProps) {
         labels,
         datasets: [
           {
-            label: hasSales ? 'Ventas ($ USD)' : 'Por Cobrar ($ USD)',
+            label: hasSales ? 'Ventas (USDT)' : 'Por Cobrar (USDT)',
             data: values,
             backgroundColor: hasSales ? '#2563EB' : '#F59E0B',
             borderRadius: 6,
@@ -360,7 +360,7 @@ export function StatsView({ state }: StatsViewProps) {
 
         <section className="rounded-xl border border-slate-800 bg-[#0D1526] p-5 sm:p-6">
           <h2 className="font-display text-base font-semibold text-white">
-            Acumulado de la Matriz de 4 Capas ($ USD)
+            Acumulado de la Matriz de 4 Capas (USDT)
           </h2>
           <p className="mt-0.5 text-xs text-slate-400">
             Distribución contable acumulada de las ventas registradas.
@@ -378,8 +378,8 @@ export function StatsView({ state }: StatsViewProps) {
       <section className="rounded-xl border border-slate-800 bg-[#0D1526] p-5 sm:p-6">
         <h2 className="font-display text-base font-semibold text-white">
           {state.sales.length > 0
-            ? 'Rendimiento Comercial por Vendedor ($ USD)'
-            : 'Distribución Actual de Cuentas por Cobrar ($ USD)'}
+            ? 'Rendimiento Comercial por Vendedor (USDT)'
+            : 'Distribución Actual de Cuentas por Cobrar (USDT)'}
         </h2>
         <p className="mt-0.5 text-xs text-slate-400">
           {state.sales.length > 0

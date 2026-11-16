@@ -24,6 +24,7 @@ import type {
 } from '../utils/finance';
 import {
   formatUSD,
+  formatUSDT,
   formatVES,
   getTotalReceivables,
   round2,
@@ -130,14 +131,14 @@ export function FinanceView({
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'x4sport-app.html';
+      link.download = 'index.html';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setFeedback({
         type: 'success',
-        text: 'Archivo completo x4sport-app.html descargado con Firebase Realtime Database integrado. Ábrelo directo en cualquier PC o navegador.',
+        text: 'Archivo autocontenido index.html descargado con Firebase Realtime Database integrado, listo para arrastrar a Netlify Drop.',
       });
     } catch (err) {
       setFeedback({
@@ -145,7 +146,7 @@ export function FinanceView({
         text:
           err instanceof Error
             ? err.message
-            : 'No se pudo descargar el archivo HTML completo.',
+            : 'No se pudo descargar el archivo index.html completo.',
       });
     } finally {
       setDownloadingHtml(false);
@@ -288,7 +289,7 @@ export function FinanceView({
             className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-600/15 px-3.5 py-2 text-xs font-semibold text-blue-200 transition-colors hover:bg-blue-600/25 hover:text-white disabled:opacity-60"
           >
             <Download className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            {downloadingHtml ? 'Generando HTML...' : 'Descargar HTML Completo'}
+            {downloadingHtml ? 'Generando index.html...' : 'Descargar index.html (Netlify Drop)'}
           </button>
 
           {!confirmReset ? (
@@ -344,19 +345,30 @@ export function FinanceView({
       )}
 
       <section aria-labelledby="funds-heading">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <h2
             id="funds-heading"
             className="font-display text-lg font-semibold text-white"
           >
-            Fondos Acumulados · Matriz de 4 Capas
+            Fondos Acumulados · Matriz de 4 Capas (USDT)
           </h2>
-          <span className="text-xs text-slate-400">
-            Caja física actual:{' '}
-            <strong className="font-mono-num text-white">
-              {formatUSD(state.cashOnHand)}
-            </strong>
-          </span>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
+            <span>
+              Ganancia neta histórica:{' '}
+              <strong
+                data-testid="finance-historical-profit"
+                className="font-mono-num text-emerald-400"
+              >
+                {formatUSDT(state.historicalNetProfit ?? 317.37)}
+              </strong>
+            </span>
+            <span>
+              Caja física actual:{' '}
+              <strong className="font-mono-num text-white">
+                {formatUSDT(state.cashOnHand)}
+              </strong>
+            </span>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -675,12 +687,28 @@ export function FinanceView({
               Registra pagos de publicidad, empaque, envíos o gastos diarios descontándolos de caja o del Fondo Operativo (10%).
             </p>
           </div>
-          <span className="font-mono-num text-xs text-slate-300">
-            Fondo Operativo 10%:{' '}
-            <strong className="text-blue-300">
-              {formatUSD(state.funds.operatingAndAds)}
-            </strong>
-          </span>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono-num text-xs text-slate-300">
+            <span>
+              Total gastos:{' '}
+              <strong
+                data-testid="finance-total-expenses"
+                className="text-red-300"
+              >
+                {formatUSDT(
+                  (state.operatingExpenses ?? []).reduce(
+                    (s, e) => s + e.amount,
+                    0,
+                  ),
+                )}
+              </strong>
+            </span>
+            <span>
+              Fondo Operativo 10%:{' '}
+              <strong className="text-blue-300">
+                {formatUSDT(state.funds.operatingAndAds)}
+              </strong>
+            </span>
+          </div>
         </div>
 
         <form
@@ -713,7 +741,7 @@ export function FinanceView({
               htmlFor="expense-amount"
               className="block text-xs font-medium text-slate-300"
             >
-              Monto ($ USD) *
+              Monto (USDT) *
             </label>
             <input
               id="expense-amount"
@@ -916,7 +944,7 @@ export function FinanceView({
                 htmlFor="injection-amount"
                 className="block text-xs font-medium text-slate-300"
               >
-                Monto ($ USD) *
+                Monto (USDT) *
               </label>
               <input
                 id="injection-amount"
@@ -1055,12 +1083,12 @@ export function FinanceView({
 
           <div className="grid grid-cols-2 gap-3 rounded-lg border border-slate-800 bg-[#080E1C] p-3.5 text-xs">
             <div>
-              <p className="text-slate-400">Caja en sistema (USD)</p>
+              <p className="text-slate-400">Caja en sistema (USDT)</p>
               <p
                 data-testid="finance-cash-system"
                 className="font-mono-num mt-1 text-lg font-bold text-white"
               >
-                {formatUSD(state.cashOnHand)}
+                {formatUSDT(state.cashOnHand)}
               </p>
             </div>
             <div>
@@ -1080,7 +1108,7 @@ export function FinanceView({
                 htmlFor="reconcile-counted-cash"
                 className="block text-xs font-medium text-slate-300"
               >
-                Efectivo físico contado ($ USD) *
+                Efectivo físico contado (USDT) *
               </label>
               <input
                 id="reconcile-counted-cash"

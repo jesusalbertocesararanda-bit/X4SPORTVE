@@ -4,6 +4,7 @@ import type { RateSyncInfo } from '../App';
 import type { AppState, TabId } from '../types/erp';
 import {
   formatUSD,
+  formatUSDT,
   formatVES,
   getLowStockItems,
   getTotalInventoryCostValue,
@@ -89,11 +90,13 @@ export function DashboardView({
   };
 
   const rateSourceLabel =
-    state.exchangeRates.source === 'api'
-      ? 'API DolarAPI VE'
-      : state.exchangeRates.source === 'manual'
-        ? 'Ajuste manual'
-        : 'Referencia inicial';
+    state.exchangeRates.source === 'excel'
+      ? 'Importada de Excel'
+      : state.exchangeRates.source === 'api'
+        ? 'API DolarAPI VE'
+        : state.exchangeRates.source === 'manual'
+          ? 'Ajuste manual'
+          : 'Referencia inicial';
 
   return (
     <div className="space-y-8">
@@ -110,50 +113,61 @@ export function DashboardView({
               Resumen en tiempo real de caja física, cuentas por cobrar y bodega X4SPORT.
             </p>
           </div>
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <span>Patrimonio líquido + costo bodega:</span>
-            <span className="font-mono-num font-semibold text-slate-200">
-              {formatUSD(state.cashOnHand + totalReceivables + inventoryValue)}
-            </span>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
+            <div>
+              <span>Ganancia neta histórica: </span>
+              <span
+                data-testid="kpi-historical-profit"
+                className="font-mono-num font-semibold text-emerald-400"
+              >
+                {formatUSDT(state.historicalNetProfit ?? 317.37)}
+              </span>
+            </div>
+            <div>
+              <span>Patrimonio líquido + bodega: </span>
+              <span className="font-mono-num font-semibold text-slate-200">
+                {formatUSDT(state.cashOnHand + totalReceivables + inventoryValue)}
+              </span>
+            </div>
           </div>
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <article className="rounded-xl border border-slate-800 bg-[#0D1526] p-5 sm:p-6">
             <p className="text-xs font-medium text-slate-400">
-              Efectivo físico en caja
+              Efectivo físico en caja (USDT)
             </p>
             <p
               data-testid="kpi-cash"
               className="font-mono-num mt-2 text-3xl font-bold tracking-tight text-white"
             >
-              {formatUSD(state.cashOnHand)}
+              {formatUSDT(state.cashOnHand)}
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
               <span>Disponible inmediato</span>
               <span aria-hidden="true">·</span>
               <span className="font-mono-num text-emerald-400">
-                {formatVES(state.cashOnHand * state.exchangeRates.bcv)} BCV
+                {formatVES(state.cashOnHand * state.exchangeRates.usdt)} USDT
               </span>
             </div>
           </article>
 
           <article className="rounded-xl border border-slate-800 bg-[#0D1526] p-5 sm:p-6">
             <p className="text-xs font-medium text-slate-400">
-              Cuentas por cobrar
+              Cuentas por cobrar (USDT)
             </p>
             <p
               data-testid="kpi-receivables"
               className="font-mono-num mt-2 text-3xl font-bold tracking-tight text-white"
             >
-              {formatUSD(totalReceivables)}
+              {formatUSDT(totalReceivables)}
             </p>
             <div className="mt-3 flex items-center justify-between gap-2 text-xs text-slate-400">
               <span>
                 {state.receivables.length}{' '}
                 {state.receivables.length === 1
-                  ? 'cliente pendiente'
-                  : 'clientes pendientes'}
+                  ? 'deudor pendiente'
+                  : 'deudores pendientes'}
               </span>
               <button
                 type="button"
@@ -180,7 +194,7 @@ export function DashboardView({
               <span>
                 Valor COGS:{' '}
                 <span className="font-mono-num text-slate-200">
-                  {formatUSD(inventoryValue)}
+                  {formatUSDT(inventoryValue)}
                 </span>
               </span>
               <button
@@ -243,7 +257,7 @@ export function DashboardView({
                   htmlFor="rate-bcv"
                   className="block text-xs font-medium text-slate-300"
                 >
-                  Tasa BCV (Bs/$)
+                  Tasa BCV (Bs/USD)
                 </label>
                 <input
                   id="rate-bcv"
@@ -265,7 +279,7 @@ export function DashboardView({
                   htmlFor="rate-usdt"
                   className="block text-xs font-medium text-slate-300"
                 >
-                  Tasa USDT / Paralelo (Bs/$)
+                  Tasa USDT / Paralelo (Bs/USDT)
                 </label>
                 <input
                   id="rate-usdt"
@@ -323,7 +337,7 @@ export function DashboardView({
                 htmlFor="quick-usd-ves"
                 className="text-xs font-medium text-slate-300"
               >
-                Calculadora rápida de cobro ($)
+                Calculadora rápida de cobro (USDT)
               </label>
               <input
                 id="quick-usd-ves"

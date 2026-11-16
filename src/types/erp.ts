@@ -44,7 +44,8 @@ export interface FifoBatch {
   entryDate: string; // YYYY-MM-DD
   initialQuantity: number;
   remainingQuantity: number;
-  unitCost: number; // Landed unit cost exact of this batch
+  unitCost: number; // Landed unit cost exact of this batch (USDT)
+  usdtRate?: number; // Tasa USDT real aplicada al lote
 }
 
 export interface InventoryItem {
@@ -173,6 +174,7 @@ export interface PurchaseBatchRecord {
   freightAdjustment?: number;
   freightPerUnit: number;
   totalLandedCost: number;
+  usdtRate?: number; // Tasa USDT real del lote (editable / importada de Excel)
   items: PurchaseBatchItemRecord[];
   createdAt: string;
   receivedAt?: string;
@@ -197,7 +199,7 @@ export interface ExchangeRates {
   bcv: number;
   usdt: number;
   updatedAt: string;
-  source?: 'api' | 'manual' | 'seed';
+  source?: 'api' | 'manual' | 'excel' | 'seed';
 }
 
 export interface OperatingExpenseRecord {
@@ -277,6 +279,7 @@ export interface AppState {
   operatingExpenses: OperatingExpenseRecord[];
   capitalInjections: CapitalInjectionRecord[];
   inventoryAdjustments: InventoryAdjustmentRecord[];
+  historicalNetProfit?: number;
   funds: FinancialFunds;
   movements: AuditMovement[];
 }

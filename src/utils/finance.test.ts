@@ -34,6 +34,22 @@ test('initial seed state matches exact mandatory X4SPORT balances', () => {
 
   assert.equal(state.cashOnHand, 120.19);
   assert.equal(getTotalReceivables(state), 263.5);
+  assert.equal(state.receivables.length, 7);
+  assert.deepEqual(
+    state.receivables.map((r) => [r.debtor, r.amount]),
+    [
+      ['Gabriel', 150],
+      ['Charles', 45],
+      ['Hermano de Charles', 20],
+      ['Suegra', 20],
+      ['Jordy', 10],
+      ['Barón', 10],
+      ['Enyer', 8.5],
+    ],
+  );
+  assert.equal(state.capitalInjections[0].amount, 1912.35);
+  assert.equal(state.operatingExpenses[0].amount, 624.0);
+  assert.equal(state.historicalNetProfit, 317.37);
   assert.equal(getTotalUnits(state), 176);
 
   // Verify every initial COGS is between $5.50 and $6.80 and salePrice is configured
@@ -213,7 +229,7 @@ test('collectReceivable and reinvestPartnerDividends settle balances accurately'
   );
 
   const cashBefore = state.cashOnHand;
-  const collectRes = collectReceivable(state, 'rec-3');
+  const collectRes = collectReceivable(state, 'rec-enyer');
   assert.equal(collectRes.ok, true);
   state = collectRes.state;
   assert.equal(state.cashOnHand, round2(cashBefore + 8.5));
@@ -281,17 +297,18 @@ test('registerMultiItemSale deducts multiple SKUs, consolidates COGS & 4-layer m
 test('two-stage import order creates EN TRÁNSITO batch without adding stock, then receiveImportBatch ingests FIFO', () => {
   let state = createInitialState();
 
-  const colRes = collectReceivable(state, 'rec-6', 'Pago Móvil / Bs');
+  const colRes = collectReceivable(state, 'rec-gabriel', 'Pago Móvil / Bs');
   assert.equal(colRes.ok, true);
   state = colRes.state;
   assert.equal(state.cashOnHand, 270.19);
 
-  // Stage 1: Create EN TRÁNSITO order (10 uds, factory $56 + freight est $30 = $86)
+  // Stage 1: Create EN TRÁNSITO order (10 uds, factory $56 + freight est $30 = $86) with custom usdtRate
   const batchRes = createImportOrder(state, {
     entryDate: '2026-11-14',
     referenceName: 'Aéreo Noviembre',
     shippingType: 'Aéreo',
     totalFreightCost: 30,
+    usdtRate: 63.75,
     items: [
       {
         team: 'Barcelona',
@@ -342,6 +359,12 @@ test('two-stage import order creates EN TRÁNSITO batch without adding stock, th
   assert.equal(state.purchaseBatches[0].freightPerUnit, 3.0);
   assert.equal(state.purchaseBatches[0].items[0].landedUnitCost, 8.0);
   assert.equal(state.purchaseBatches[0].items[1].landedUnitCost, 9.0);
+  assert.equal(state.purchaseBatches[0].usdtRate, 63.75);
+  assert.equal(
+    state.inventory.find((i) => i.model === 'Milan Retro 94')?.fifoBatches[0]
+      .usdtRate,
+    63.75,
+  );
   assert.equal(getTransitCapitalSummary(state).transitCount, 0);
 
   // Sell 3 units of Barcelona Retro 08/09 (had 2 @ 6.80 + 4 @ 8.00 -> FIFO COGS = 2*6.80 + 1*8.00 = 21.60)
@@ -477,7 +500,7 @@ test('registerOperatingExpense (Caja Chica) deducts cash/operating fund and prev
   assert.equal(okOp.ok, true);
   assert.equal(okOp.state.funds.operatingAndAds, round2(opBefore - 3.5));
   assert.equal(okOp.state.cashOnHand, round2(cashBefore - 3.5));
-  assert.equal(okOp.state.operatingExpenses.length, 1);
+  assert.equal(okOp.state.operatingExpenses.length, 2);
 });
 
 test('adjustInventoryPhysicalCount adjusts stock and keeps FIFO batch totals synchronized', () => {
@@ -811,7 +834,7 @@ test('registerCapitalInjection and reconcileCashOnHand update liquidity without 
   state = injRes.state;
   assert.equal(state.cashOnHand, round2(120.19 + 100));
   assert.equal(state.funds.growthReinvestment, 100);
-  assert.equal(state.capitalInjections.length, 1);
+  assert.equal(state.capitalInjections.length, 2);
   assert.equal(state.movements[0].type, 'capital_injection');
 
   // Reconcile cash exact count ($225.00)
@@ -837,20 +860,23 @@ test('registerCapitalInjection and reconcileCashOnHand update liquidity without 
   );
 
   // Verify sanitizeForFirebase & normalizeAppState roundtrip with capitalInjections & installments
-  const abonoState = collectReceivable(state, 'rec-3', 'Efectivo ($)', 3.5).state;
+  const abonoState = collectReceivable(state, 'rec-enyer', 'Efectivo ($)', 3.5).state;
   const sanitized = sanitizeForFirebase(abonoState);
   const hydrated = normalizeAppState({
     ...sanitized,
-    capitalInjections: { '0': sanitized.capitalInjections[0] },
+    capitalInjections: {
+      '0': sanitized.capitalInjections[0],
+      '1': sanitized.capitalInjections[1],
+    },
     receivables: sanitized.receivables.map((r) =>
-      r.id === 'rec-3' && r.installments
+      r.id === 'rec-enyer' && r.installments
         ? { ...r, installments: { '0': r.installments[0] } }
         : r,
     ),
   });
-  assert.equal(hydrated.capitalInjections.length, 1);
+  assert.equal(hydrated.capitalInjections.length, 2);
   assert.equal(
-    hydrated.receivables.find((r) => r.id === 'rec-3')?.installments?.length,
+    hydrated.receivables.find((r) => r.id === 'rec-enyer')?.installments?.length,
     1,
   );
 });

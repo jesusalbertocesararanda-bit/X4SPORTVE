@@ -76,8 +76,15 @@ export function PurchasesView({
   const [referenceName, setReferenceName] = useState('Aéreo Noviembre');
   const [shippingType, setShippingType] = useState<ShippingType>('Aéreo');
   const [totalFreightCost, setTotalFreightCost] = useState('15.00');
+  const [batchUsdtRate, setBatchUsdtRate] = useState(
+    state.exchangeRates.usdt.toFixed(2),
+  );
   const [fundingSource, setFundingSource] =
     useState<PurchaseFundingSource>('cashOnHand');
+
+  useEffect(() => {
+    setBatchUsdtRate(state.exchangeRates.usdt.toFixed(2));
+  }, [state.exchangeRates.usdt]);
 
   // Etapa 1: Batch item builder fields
   const [team, setTeam] = useState<TeamCategory>('Barcelona');
@@ -210,12 +217,15 @@ export function PurchasesView({
       return;
     }
 
+    const parsedBatchUsdt = round2(Number(batchUsdtRate) || 0);
     const res = onRegisterImportBatch({
       entryDate,
       referenceName,
       shippingType,
       totalFreightCost: parsedFreight,
       fundingSource,
+      usdtRate:
+        parsedBatchUsdt > 0 ? parsedBatchUsdt : state.exchangeRates.usdt,
       items: draftItems.map((l) => ({
         team: l.team,
         model: l.model,
@@ -485,7 +495,7 @@ export function PurchasesView({
                 </span>
               </div>
 
-              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <div>
                   <label
                     htmlFor="batch-date"
@@ -551,7 +561,7 @@ export function PurchasesView({
                     htmlFor="batch-freight"
                     className="block text-xs font-medium text-slate-300"
                   >
-                    Flete Estimado ($)
+                    Flete Estimado (USDT)
                   </label>
                   <input
                     id="batch-freight"
@@ -561,6 +571,28 @@ export function PurchasesView({
                     value={totalFreightCost}
                     onChange={(e) => {
                       setTotalFreightCost(e.target.value);
+                      setFeedback(null);
+                    }}
+                    className="font-mono-num mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="batch-usdt-rate"
+                    className="block text-xs font-medium text-slate-300"
+                  >
+                    Tasa USDT del Lote (Bs/USDT)
+                  </label>
+                  <input
+                    id="batch-usdt-rate"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    required
+                    value={batchUsdtRate}
+                    onChange={(e) => {
+                      setBatchUsdtRate(e.target.value);
                       setFeedback(null);
                     }}
                     className="font-mono-num mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -731,7 +763,7 @@ export function PurchasesView({
                       htmlFor="purchase-factory-cost"
                       className="block text-xs font-medium text-slate-300"
                     >
-                      Precio Fábrica ($/ud)
+                      Precio Fábrica (USDT/ud)
                     </label>
                     <input
                       id="purchase-factory-cost"
@@ -1149,6 +1181,12 @@ export function PurchasesView({
                                 {formatUSD(b.freightPerUnit)}/ud
                               </span>
                               )
+                              {b.usdtRate ? (
+                                <span className="font-mono-num text-slate-400">
+                                  {' '}
+                                  · Tasa {b.usdtRate.toFixed(2)}
+                                </span>
+                              ) : null}
                             </p>
                           </td>
                           <td className="px-4 py-3">
@@ -1311,7 +1349,7 @@ export function PurchasesView({
                     htmlFor="receive-actual-freight"
                     className="block text-xs font-medium text-slate-300"
                   >
-                    Costo Real del Flete ($ USD)
+                    Costo Real del Flete (USDT)
                   </label>
                   <input
                     id="receive-actual-freight"

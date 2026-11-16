@@ -102,6 +102,8 @@ export default function App() {
   );
 
   const hasBootRateSyncRef = useRef(false);
+  const latestRateSourceRef = useRef(state.exchangeRates.source);
+  latestRateSourceRef.current = state.exchangeRates.source;
 
   const syncRatesFromApi = useCallback(async () => {
     setRateSync({ status: 'loading', message: 'Consultando tasas BCV / USDT...' });
@@ -144,9 +146,22 @@ export default function App() {
   }, []);
 
   // Esperar a que Firebase entregue el estado inicial antes de sincronizar tasas en vivo
+  // (No sobrescribir tasas reales importadas desde Excel ni ajustes manuales)
   useEffect(() => {
     if (isHydratingDb || hasBootRateSyncRef.current) return;
     hasBootRateSyncRef.current = true;
+
+    const currentSource = latestRateSourceRef.current;
+    if (currentSource === 'excel' || currentSource === 'manual') {
+      setRateSync({
+        status: 'idle',
+        message:
+          currentSource === 'excel'
+            ? 'Usando Tasa USDT importada desde Excel.'
+            : 'Usando ajuste manual guardado.',
+      });
+      return;
+    }
 
     let active = true;
     setRateSync({ status: 'loading', message: 'Consultando tasas BCV / USDT...' });
@@ -278,6 +293,7 @@ export default function App() {
     const clean = await purgeAllDataInFirebase(
       state.exchangeRates.bcv,
       state.exchangeRates.usdt,
+      state.exchangeRates.source,
     );
     setState(clean);
     setDbError(null);
@@ -374,6 +390,7 @@ export default function App() {
 
       <ExcelImportModal
         isOpen={isExcelModalOpen}
+        currentRates={state.exchangeRates}
         onClose={() => setIsExcelModalOpen(false)}
         onApplyImportedState={handleApplyImportedState}
         onPurgeGhostData={handlePurgeGhostData}

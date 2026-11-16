@@ -9,16 +9,17 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import type { AppState } from '../types/erp';
+import type { AppState, ExchangeRates } from '../types/erp';
 import {
   downloadExcelTemplateWithSheetJS,
   parseExcelFileWithSheetJS,
 } from '../utils/excelImport';
 import type { ExcelImportPreview } from '../utils/excelImport';
-import { formatUSD } from '../utils/finance';
+import { formatUSD, formatUSDT } from '../utils/finance';
 
 interface ExcelImportModalProps {
   isOpen: boolean;
+  currentRates: ExchangeRates;
   onClose: () => void;
   onApplyImportedState: (nextState: AppState) => Promise<void>;
   onPurgeGhostData: () => Promise<void>;
@@ -29,9 +30,10 @@ const COMPRAS_FIELD_LABELS: Record<string, string> = {
   size: 'Talla',
   version: 'Versión',
   quantity: 'Cantidad',
-  unitCost: 'Costo unitario',
-  salePrice: 'Precio de venta',
+  unitCost: 'Costo Unit. (USDT)',
+  salePrice: 'Precio Venta (USDT)',
   date: 'Fecha',
+  usdtRate: 'Tasa USDT',
   bcvRate: 'Tasa BCV',
   reference: 'Lote / Ref.',
 };
@@ -44,14 +46,15 @@ const VENTAS_FIELD_LABELS: Record<string, string> = {
   customer: 'Comprador',
   seller: 'Vendedor',
   date: 'Fecha',
-  totalPrice: 'Total ($)',
-  unitPrice: 'Precio unit.',
+  totalPrice: 'Total (USDT)',
+  unitPrice: 'Precio unit. (USDT)',
   paymentStatus: 'Estado',
   paymentMethod: 'Método pago',
 };
 
 export function ExcelImportModal({
   isOpen,
+  currentRates,
   onClose,
   onApplyImportedState,
   onPurgeGhostData,
@@ -74,7 +77,10 @@ export function ExcelImportModal({
     setSelectedFileName(file.name);
     setIsParsing(true);
     try {
-      const result = await parseExcelFileWithSheetJS(file);
+      const result = await parseExcelFileWithSheetJS(file, {
+        currentBcv: currentRates.bcv,
+        currentUsdt: currentRates.usdt,
+      });
       if (!result.ok || !result.preview || !result.state) {
         setPreview(null);
         setPendingState(null);
@@ -133,7 +139,7 @@ export function ExcelImportModal({
       setPendingState(null);
       setSelectedFileName(null);
       setSuccessMsg(
-        'Datos fantasma eliminados de localStorage y Firebase Realtime Database. Base de datos limpia.',
+        'Datos fantasma eliminados. Base de datos limpia con los saldos fijos iniciales en USDT ($120.19 caja, $263.50 CxC desglosada, $1,912.35 capital, $624.00 gastos y $317.37 ganancia neta histórica).',
       );
     } catch (err) {
       setErrorMsg(
@@ -282,7 +288,7 @@ export function ExcelImportModal({
                 </p>
               </div>
               <span className="font-mono-num text-xs font-semibold text-blue-300">
-                Tasa BCV: {preview.bcvRate.toFixed(2)}
+                Tasa USDT: {preview.usdtRate.toFixed(2)} · BCV: {preview.bcvRate.toFixed(2)}
               </span>
             </div>
 
@@ -293,7 +299,7 @@ export function ExcelImportModal({
                   {preview.comprasUnitsTotal} uds
                 </p>
                 <p className="font-mono-num text-[11px] text-slate-400">
-                  {preview.comprasRowsParsed} filas · {formatUSD(preview.comprasCostTotal)}
+                  {preview.comprasRowsParsed} filas · {formatUSDT(preview.comprasCostTotal)}
                 </p>
               </div>
 
@@ -319,13 +325,34 @@ export function ExcelImportModal({
               </div>
 
               <div className="rounded-lg border border-slate-800 bg-[#0D1526] p-3">
-                <p className="text-slate-400">Caja y CxC Reales</p>
+                <p className="text-slate-400">Caja y CxC (USDT)</p>
                 <p className="font-mono-num mt-1 text-base font-bold text-white">
-                  {formatUSD(preview.cashOnHand)}
+                  {formatUSDT(preview.cashOnHand)}
                 </p>
                 <p className="font-mono-num text-[11px] text-amber-300">
-                  CxC: {formatUSD(preview.receivablesTotal)}
+                  CxC: {formatUSDT(preview.receivablesTotal)} ({preview.receivablesCount})
                 </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 text-xs">
+              <div className="rounded-lg border border-slate-800 bg-[#0D1526] px-3 py-2.5 flex items-center justify-between">
+                <span className="text-slate-400">Capital inyectado</span>
+                <span className="font-mono-num font-semibold text-white">
+                  {formatUSDT(preview.injectionsTotal)}
+                </span>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-[#0D1526] px-3 py-2.5 flex items-center justify-between">
+                <span className="text-slate-400">Gastos operativos</span>
+                <span className="font-mono-num font-semibold text-red-300">
+                  {formatUSDT(preview.expensesTotal)}
+                </span>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-[#0D1526] px-3 py-2.5 flex items-center justify-between">
+                <span className="text-slate-400">Ganancia neta hist.</span>
+                <span className="font-mono-num font-semibold text-emerald-400">
+                  {formatUSDT(preview.historicalNetProfit)}
+                </span>
               </div>
             </div>
 
