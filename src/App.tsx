@@ -434,7 +434,6 @@ export default function App() {
               {activeTab === 'inventario' && (
                 <InventoryView
                   state={state}
-                  onAdjustInventoryCount={handleAdjustInventoryCount}
                 />
               )}
 

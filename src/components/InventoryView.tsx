@@ -1,14 +1,11 @@
 import { useMemo, useState } from 'react';
 import {
   AlertTriangle,
-  CheckCircle2,
-  ClipboardCheck,
   LayoutGrid,
   List,
   Search,
 } from 'lucide-react';
 import type { AppState, TeamCategory } from '../types/erp';
-import type { AdjustInventoryCountInput } from '../utils/finance';
 import {
   ALL_JERSEY_SIZES,
   formatUSD,
@@ -21,9 +18,6 @@ import {
 
 interface InventoryViewProps {
   state: AppState;
-  onAdjustInventoryCount: (
-    input: AdjustInventoryCountInput,
-  ) => { ok: boolean; error?: string };
 }
 
 type InventoryDisplayMode = 'matrix' | 'sku';
@@ -37,30 +31,11 @@ const DEFAULT_TEAM_ORDER = [
   'Otro',
 ];
 
-export function InventoryView({
-  state,
-  onAdjustInventoryCount,
-}: InventoryViewProps) {
+export function InventoryView({ state }: InventoryViewProps) {
   const [displayMode, setDisplayMode] = useState<InventoryDisplayMode>('matrix');
   const [query, setQuery] = useState('');
   const [teamFilter, setTeamFilter] = useState<'Todos' | TeamCategory>('Todos');
   const [onlyLowStock, setOnlyLowStock] = useState(false);
-
-  const [showAdjustPanel, setShowAdjustPanel] = useState(false);
-  const [adjustSkuId, setAdjustSkuId] = useState<string>(
-    state.inventory[0]?.id ?? '',
-  );
-  const [physicalCountInput, setPhysicalCountInput] = useState<string>('');
-  const [adjustReason, setAdjustReason] = useState<string>('');
-  const [adjustFeedback, setAdjustFeedback] = useState<{
-    type: 'success' | 'error';
-    text: string;
-  } | null>(null);
-
-  const effectiveAdjustSku =
-    state.inventory.find((i) => i.id === adjustSkuId) ??
-    state.inventory[0] ??
-    null;
 
   const teamFilters = useMemo(() => {
     const present = new Set(state.inventory.map((i) => i.team));
@@ -113,42 +88,6 @@ export function InventoryView({
       ? filteredMatrixRows.reduce((sum, r) => sum + r.totalStock, 0)
       : filteredItems.reduce((sum, i) => sum + i.stock, 0);
 
-  const handleAdjustSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setAdjustFeedback(null);
-    if (!effectiveAdjustSku) return;
-
-    const parsedNewStock = Math.floor(Number(physicalCountInput));
-    if (!Number.isFinite(parsedNewStock) || physicalCountInput.trim() === '') {
-      setAdjustFeedback({
-        type: 'error',
-        text: 'Ingresa la cantidad física contada en bodega.',
-      });
-      return;
-    }
-
-    const res = onAdjustInventoryCount({
-      skuId: effectiveAdjustSku.id,
-      newStock: parsedNewStock,
-      reason: adjustReason,
-    });
-
-    if (!res.ok) {
-      setAdjustFeedback({
-        type: 'error',
-        text: res.error ?? 'No se pudo registrar el ajuste físico.',
-      });
-      return;
-    }
-
-    setPhysicalCountInput('');
-    setAdjustReason('');
-    setAdjustFeedback({
-      type: 'success',
-      text: `Conteo físico aplicado a ${effectiveAdjustSku.model} (${normalizeVersionDisplay(effectiveAdjustSku.version)} · ${effectiveAdjustSku.size}): nuevo stock ${parsedNewStock} uds.`,
-    });
-  };
-
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -191,150 +130,8 @@ export function InventoryView({
               </span>
             </>
           )}
-          <button
-            type="button"
-            onClick={() => {
-              setShowAdjustPanel((prev) => !prev);
-              setAdjustFeedback(null);
-            }}
-            aria-expanded={showAdjustPanel}
-            className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-600/20 px-3.5 py-2 text-xs font-semibold text-blue-200 transition-colors hover:bg-blue-600/30 hover:text-white whitespace-nowrap shrink-0"
-          >
-            <ClipboardCheck className="h-4 w-4" aria-hidden="true" />
-            {showAdjustPanel ? 'Ocultar Conteo Físico' : 'Ajuste Conteo Físico'}
-          </button>
         </div>
       </div>
-
-      {showAdjustPanel && (
-        <section
-          aria-labelledby="physical-adjust-heading"
-          className="rounded-xl border border-slate-800 bg-[#0D1526] p-5 sm:p-6 space-y-5"
-        >
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2
-                id="physical-adjust-heading"
-                className="font-display text-lg font-semibold text-white"
-              >
-                Ajuste por Conteo Físico de Bodega
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-400">
-                Sincroniza el stock y las capas FIFO ante mermas, extravíos o sobrantes físicos.
-              </p>
-            </div>
-            {effectiveAdjustSku && (
-              <span className="font-mono-num text-xs text-slate-300">
-                Stock sistema:{' '}
-                <strong className="text-white">
-                  {effectiveAdjustSku.stock} uds
-                </strong>
-              </span>
-            )}
-          </div>
-
-          <form
-            onSubmit={handleAdjustSubmit}
-            className="grid grid-cols-1 gap-4 sm:grid-cols-12 sm:items-end"
-          >
-            <div className="sm:col-span-5">
-              <label
-                htmlFor="adjust-sku"
-                className="block text-xs font-medium text-slate-300"
-              >
-                SKU a ajustar
-              </label>
-              <select
-                id="adjust-sku"
-                value={effectiveAdjustSku?.id ?? ''}
-                onChange={(e) => {
-                  setAdjustSkuId(e.target.value);
-                  setAdjustFeedback(null);
-                }}
-                className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              >
-                {state.inventory.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.model} ({normalizeVersionDisplay(item.version)} · {item.size}) — Sistema:{' '}
-                    {item.stock} uds
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="sm:col-span-2">
-              <label
-                htmlFor="adjust-new-stock"
-                className="block text-xs font-medium text-slate-300"
-              >
-                Conteo Físico
-              </label>
-              <input
-                id="adjust-new-stock"
-                type="number"
-                min="0"
-                step="1"
-                required
-                placeholder={
-                  effectiveAdjustSku ? String(effectiveAdjustSku.stock) : '0'
-                }
-                value={physicalCountInput}
-                onChange={(e) => {
-                  setPhysicalCountInput(e.target.value);
-                  setAdjustFeedback(null);
-                }}
-                className="font-mono-num mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-
-            <div className="sm:col-span-3">
-              <label
-                htmlFor="adjust-reason"
-                className="block text-xs font-medium text-slate-300"
-              >
-                Motivo del ajuste *
-              </label>
-              <input
-                id="adjust-reason"
-                type="text"
-                required
-                placeholder="Ej. Conteo físico semanal"
-                value={adjustReason}
-                onChange={(e) => {
-                  setAdjustReason(e.target.value);
-                  setAdjustFeedback(null);
-                }}
-                className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-
-            <div className="sm:col-span-2">
-              <button
-                type="submit"
-                className="inline-flex min-h-[44px] w-full items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-500 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-              >
-                Aplicar Ajuste
-              </button>
-            </div>
-          </form>
-
-          {adjustFeedback && (
-            <div
-              role="status"
-              className={`flex items-center gap-2 rounded-lg px-3.5 py-2.5 text-xs font-medium ${
-                adjustFeedback.type === 'error'
-                  ? 'border border-red-500/30 bg-red-500/10 text-red-300'
-                  : 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-              }`}
-            >
-              {adjustFeedback.type === 'success' && (
-                <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
-              )}
-              <span>{adjustFeedback.text}</span>
-            </div>
-          )}
-        </section>
-      )}
 
       <section className="rounded-xl border border-slate-800 bg-[#0D1526] p-4 sm:p-5 space-y-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
