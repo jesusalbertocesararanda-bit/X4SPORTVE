@@ -7,7 +7,10 @@ import {
   X,
 } from 'lucide-react';
 import type { AppState, InventoryItem, TeamCategory } from '../types/erp';
-import type { ApplyAuditAdjustmentsInput } from '../utils/finance';
+import type {
+  AdjustInventoryCountInput,
+  ApplyAuditAdjustmentsInput,
+} from '../utils/finance';
 import {
   formatUSD,
   getInventoryCascadeGroups,
@@ -20,6 +23,9 @@ interface AuditViewProps {
   state: AppState;
   onApplyAuditAdjustments: (
     input: ApplyAuditAdjustmentsInput,
+  ) => { ok: boolean; error?: string };
+  onAdjustInventoryCount: (
+    input: AdjustInventoryCountInput,
   ) => { ok: boolean; error?: string };
 }
 
@@ -51,10 +57,80 @@ interface PendingSkuChange {
 export function AuditView({
   state,
   onApplyAuditAdjustments,
+  onAdjustInventoryCount,
 }: AuditViewProps) {
   const [auditMode, setAuditMode] = useState<AuditMode>('cascade');
   const [searchQuery, setSearchQuery] = useState('');
   const [teamFilter, setTeamFilter] = useState<'Todos' | TeamCategory>('Todos');
+
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualSkuId, setManualSkuId] = useState(state.inventory[0]?.id ?? '');
+  const [manualAdjType, setManualAdjType] = useState<'entrada' | 'salida'>('entrada');
+  const [manualQtyInput, setManualQtyInput] = useState('');
+  const [manualReason, setManualReason] = useState('');
+  const [manualFeedback, setManualFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+
+  const effectiveManualSku =
+    state.inventory.find((i) => i.id === manualSkuId) ??
+    state.inventory[0] ??
+    null;
+
+  const handleManualSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setManualFeedback(null);
+    if (!effectiveManualSku) return;
+
+    const qty = Math.floor(Number(manualQtyInput));
+    if (!Number.isFinite(qty) || qty <= 0) {
+      setManualFeedback({
+        type: 'error',
+        text: 'Ingresa una cantidad válida mayor a 0.',
+      });
+      return;
+    }
+
+    const delta = manualAdjType === 'entrada' ? qty : -qty;
+    const newStock = effectiveManualSku.stock + delta;
+    if (newStock < 0) {
+      setManualFeedback({
+        type: 'error',
+        text: `Stock insuficiente en bodega (${effectiveManualSku.stock} uds) para registrar una salida de ${qty} uds.`,
+      });
+      return;
+    }
+
+    const res = onAdjustInventoryCount({
+      skuId: effectiveManualSku.id,
+      newStock,
+      reason:
+        manualReason.trim() ||
+        (manualAdjType === 'entrada'
+          ? 'Entrada manual de mercancía'
+          : 'Salida manual de mercancía'),
+    });
+
+    if (!res.ok) {
+      setManualFeedback({
+        type: 'error',
+        text: res.error ?? 'No se pudo aplicar el ajuste manual.',
+      });
+      return;
+    }
+
+    setManualQtyInput('');
+    setManualReason('');
+    setManualFeedback({
+      type: 'success',
+      text: `Ajuste manual aplicado: ${
+        manualAdjType === 'entrada' ? '+' : '-'
+      }${qty} uds a ${effectiveManualSku.model} (${effectiveManualSku.version} · ${
+        effectiveManualSku.size
+      }). Stock actual: ${newStock} uds.`,
+    });
+  };
 
   // Modo 1 (Cascada): group physical total inputs keyed by group.key
   const [groupCounts, setGroupCounts] = useState<Record<string, string>>({});
@@ -363,16 +439,30 @@ export function AuditView({
           </p>
         </div>
 
-        <button
-          type="button"
-          data-testid="btn-apply-audit"
-          onClick={handleOpenApplyConfirm}
-          className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-500 active:scale-[0.99] whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-        >
-          <ClipboardCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
-          Aplicar Ajustes de Auditoría
-          {pendingChanges.length > 0 ? ` (${pendingChanges.length})` : ''}
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => {
+              setManualFeedback(null);
+              setShowManualModal(true);
+            }}
+            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-slate-700 bg-[#0D1526] px-4 py-2 text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-800 hover:text-white whitespace-nowrap shrink-0"
+          >
+            <ClipboardCheck className="h-4 w-4 text-blue-400" aria-hidden="true" />
+            Ajuste Manual (Entrada / Salida)
+          </button>
+
+          <button
+            type="button"
+            data-testid="btn-apply-audit"
+            onClick={handleOpenApplyConfirm}
+            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-500 active:scale-[0.99] whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+          >
+            <ClipboardCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Aplicar Ajustes de Auditoría
+            {pendingChanges.length > 0 ? ` (${pendingChanges.length})` : ''}
+          </button>
+        </div>
       </div>
 
       {/* KPI Strip */}
@@ -1224,6 +1314,150 @@ export function AuditView({
                 >
                   <ClipboardCheck className="h-4 w-4" aria-hidden="true" />
                   Confirmar y Aplicar Ajustes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Ajuste Manual Directo (Entrada / Salida) */}
+      {showManualModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="manual-adjust-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+        >
+          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border border-slate-700 bg-[#0D1526] p-5 sm:p-6 shadow-2xl space-y-5">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+              <div>
+                <h2
+                  id="manual-adjust-title"
+                  className="font-display text-lg font-bold text-white"
+                >
+                  Ajuste Manual de Inventario (Entrada / Salida)
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-400">
+                  Registra entradas o salidas directas por SKU sin necesidad de conteos físicos completos.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowManualModal(false)}
+                aria-label="Cerrar ajuste manual"
+                className="inline-flex min-h-[38px] min-w-[38px] items-center justify-center rounded-lg border border-slate-700 bg-[#080E1C] text-slate-300 hover:bg-slate-800 hover:text-white"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            {manualFeedback && (
+              <div
+                role="status"
+                className={`flex items-center gap-2 rounded-lg px-3.5 py-2.5 text-xs font-medium ${
+                  manualFeedback.type === 'error'
+                    ? 'border border-red-500/30 bg-red-500/10 text-red-300'
+                    : 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                }`}
+              >
+                {manualFeedback.type === 'success' && (
+                  <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                )}
+                <span>{manualFeedback.text}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleManualSubmit} className="space-y-4">
+              <div>
+                <label htmlFor="manual-sku" className="block text-xs font-medium text-slate-300">
+                  Seleccionar SKU (Modelo, Versión, Talla) *
+                </label>
+                <select
+                  id="manual-sku"
+                  value={effectiveManualSku?.id ?? ''}
+                  onChange={(e) => {
+                    setManualSkuId(e.target.value);
+                    setManualFeedback(null);
+                  }}
+                  className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                >
+                  {state.inventory.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.model} ({item.version} · {item.size}) — Stock actual: {item.stock} uds
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label htmlFor="manual-type" className="block text-xs font-medium text-slate-300">
+                    Tipo de Ajuste *
+                  </label>
+                  <select
+                    id="manual-type"
+                    value={manualAdjType}
+                    onChange={(e) => setManualAdjType(e.target.value as 'entrada' | 'salida')}
+                    className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                  >
+                    <option value="entrada">Entrada de Mercancía (+)</option>
+                    <option value="salida">Salida / Merma de Mercancía (-)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="manual-qty" className="block text-xs font-medium text-slate-300">
+                    Cantidad (Unidades) *
+                  </label>
+                  <input
+                    id="manual-qty"
+                    type="number"
+                    min="1"
+                    step="1"
+                    required
+                    placeholder="Ej. 5"
+                    value={manualQtyInput}
+                    onChange={(e) => {
+                      setManualQtyInput(e.target.value);
+                      setManualFeedback(null);
+                    }}
+                    className="font-mono-num mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label htmlFor="manual-reason" className="block text-xs font-medium text-slate-300">
+                  Motivo del Ajuste *
+                </label>
+                <input
+                  id="manual-reason"
+                  type="text"
+                  required
+                  placeholder="Ej. Corrección manual / Ajuste de stock"
+                  value={manualReason}
+                  onChange={(e) => {
+                    setManualReason(e.target.value);
+                    setManualFeedback(null);
+                  }}
+                  className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowManualModal(false)}
+                  className="min-h-[42px] rounded-lg border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white"
+                >
+                  Cerrar
+                </button>
+                <button
+                  type="submit"
+                  className="min-h-[42px] rounded-lg bg-blue-600 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-500"
+                >
+                  Registrar Ajuste Manual
                 </button>
               </div>
             </form>

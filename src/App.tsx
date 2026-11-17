@@ -441,6 +441,7 @@ export default function App() {
                 <AuditView
                   state={state}
                   onApplyAuditAdjustments={handleApplyAuditAdjustments}
+                  onAdjustInventoryCount={handleAdjustInventoryCount}
                 />
               )}
 
