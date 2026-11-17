@@ -133,13 +133,21 @@ export interface PublicTransitCard {
   searchIndexText: string;
 }
 
+export function isRateValid(rate: unknown): rate is number {
+  return typeof rate === 'number' && Number.isFinite(rate) && rate > 0;
+}
+
+/**
+ * Calcula el precio en Bolívares (Bs) a partir del precio en USD y la tasa USDT / Paralelo vigente.
+ * Si la tasa es inválida, 0, nula o indefinida, devuelve null para proteger los márgenes del negocio.
+ */
 export function calculateCatalogBsPrice(
   priceUsd: number,
-  usdtRate: number,
-): number {
-  const safeUsd = Number.isFinite(priceUsd) ? Math.max(0, priceUsd) : 0;
-  const safeRate = Number.isFinite(usdtRate) ? Math.max(0, usdtRate) : 0;
-  return round2(safeUsd * safeRate);
+  usdtRate?: number | null,
+): number | null {
+  if (!isRateValid(usdtRate)) return null;
+  if (!Number.isFinite(priceUsd) || priceUsd <= 0) return null;
+  return round2(priceUsd * usdtRate);
 }
 
 function parseIsoDateUtcMs(iso?: string): number | null {
@@ -259,7 +267,47 @@ export function resolveCatalogKeywords(
 }
 
 /**
- * Normaliza enlaces de imagen (Google Drive share URLs -> thumbnail público directo)
+ * Extrae el ID único de archivo de cualquier formato de enlace de Google Drive.
+ */
+export function extractGoogleDriveFileId(rawUrl: string): string | null {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+
+  // Ya está en formato directo lh3: https://lh3.googleusercontent.com/d/<ID>
+  const lh3Match = trimmed.match(/lh3\.googleusercontent\.com\/d\/([a-zA-Z0-9_-]+)/i);
+  if (lh3Match?.[1]) return lh3Match[1];
+
+  // drive.google.com/.../d/<ID> o docs.google.com/.../d/<ID>
+  const fileMatch = trimmed.match(
+    /(?:drive|docs)\.google\.com\/(?:[a-zA-Z0-9_\/]*\/)?d\/([a-zA-Z0-9_-]+)/i,
+  );
+  if (fileMatch?.[1]) return fileMatch[1];
+
+  // drive.google.com?...id=<ID> o docs.google.com?...id=<ID>
+  if (/(?:drive|docs)\.google\.com/i.test(trimmed)) {
+    const idMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/i);
+    if (idMatch?.[1]) return idMatch[1];
+  }
+
+  return null;
+}
+
+/**
+ * Convierte un enlace compartido de Google Drive al formato de visualización directa de imagen:
+ * https://lh3.googleusercontent.com/d/[FILE_ID]
+ * permitiendo usar Google Drive como servidor CDN de imágenes sin gastar almacenamiento local.
+ */
+export function convertGoogleDriveUrlToDirect(rawUrl: string): string {
+  const fileId = extractGoogleDriveFileId(rawUrl);
+  if (fileId) {
+    return `https://lh3.googleusercontent.com/d/${fileId}`;
+  }
+  return rawUrl.trim();
+}
+
+/**
+ * Normaliza enlaces de imagen (Google Drive share URLs -> visualización directa lh3.googleusercontent.com)
  * manteniendo intactas URLs directas HTTPS y Data URLs base64.
  */
 export function normalizeCatalogImageUrl(rawUrl: string): string {
@@ -267,18 +315,9 @@ export function normalizeCatalogImageUrl(rawUrl: string): string {
   if (!trimmed) return '';
   if (trimmed.startsWith('data:image/')) return trimmed;
 
-  // Google Drive: /file/d/<ID>/view...
-  const fileMatch = trimmed.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/i);
-  if (fileMatch?.[1]) {
-    return `https://drive.google.com/thumbnail?id=${fileMatch[1]}&sz=w1000`;
-  }
-
-  // Google Drive: ?id=<ID> or &id=<ID>
-  if (/drive\.google\.com/i.test(trimmed)) {
-    const idMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/i);
-    if (idMatch?.[1]) {
-      return `https://drive.google.com/thumbnail?id=${idMatch[1]}&sz=w1000`;
-    }
+  const directGoogleDriveUrl = convertGoogleDriveUrlToDirect(trimmed);
+  if (directGoogleDriveUrl !== trimmed) {
+    return directGoogleDriveUrl;
   }
 
   return trimmed;

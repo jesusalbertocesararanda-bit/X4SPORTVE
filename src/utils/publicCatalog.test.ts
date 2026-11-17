@@ -11,10 +11,13 @@ import {
   calculateCatalogBsPrice,
   CATALOG_WHATSAPP_ADVISORS,
   computeTransitDaysRemaining,
+  convertGoogleDriveUrlToDirect,
+  extractGoogleDriveFileId,
   filterPublicCatalogGroups,
   filterUpcomingTransitCards,
   getCurrentWhatsAppTurnIndex,
   isPublicCatalogModeFromLocation,
+  isRateValid,
   normalizeCatalogImageUrl,
   normalizeCatalogModelKey,
 } from './publicCatalog';
@@ -226,11 +229,20 @@ test('buildUpcomingTransitCards exposes only EN TRÁNSITO batches and filters pr
 });
 
 test('calculateCatalogBsPrice converts USD prices strictly with USDT/Paralelo rate and computeTransitDaysRemaining handles explicit & SLA ETAs', () => {
-  // 30 USD at 54.20 USDT = 1626.00 Bs (not 1395.00 BCV @ 46.50)
+  // 30 USD at 54.20 USDT = 1626.00 Bs
   assert.equal(calculateCatalogBsPrice(30, 54.2), 1626);
   assert.equal(calculateCatalogBsPrice(25.5, 53.75), 1370.63);
-  assert.equal(calculateCatalogBsPrice(-10, 54.2), 0);
-  assert.equal(calculateCatalogBsPrice(25, Number.NaN), 0);
+  // Protege márgenes si la tasa es inválida, 0, nula o negativa
+  assert.equal(calculateCatalogBsPrice(-10, 54.2), null);
+  assert.equal(calculateCatalogBsPrice(25, Number.NaN), null);
+  assert.equal(calculateCatalogBsPrice(25, 0), null);
+  assert.equal(calculateCatalogBsPrice(25, -5), null);
+  assert.equal(calculateCatalogBsPrice(25, null as unknown as number), null);
+  assert.equal(calculateCatalogBsPrice(25, undefined), null);
+  assert.equal(isRateValid(54.2), true);
+  assert.equal(isRateValid(0), false);
+  assert.equal(isRateValid(null), false);
+  assert.equal(isRateValid(Number.NaN), false);
 
   // Explicit estimated arrival date
   assert.deepEqual(
@@ -320,18 +332,30 @@ test('WhatsApp rotation alternates strictly between Jesús César and Josué Oje
   assert.equal(CATALOG_WHATSAPP_ADVISORS.length, 2);
 });
 
-test('normalizeCatalogImageUrl converts Google Drive links and preserves direct/data URLs', () => {
+test('normalizeCatalogImageUrl converts Google Drive links to direct lh3 format and preserves direct/data URLs', () => {
   assert.equal(
     normalizeCatalogImageUrl('https://drive.google.com/file/d/1AbCDefGhIjkLMNOP/view?usp=sharing'),
-    'https://drive.google.com/thumbnail?id=1AbCDefGhIjkLMNOP&sz=w1000',
+    'https://lh3.googleusercontent.com/d/1AbCDefGhIjkLMNOP',
   );
   assert.equal(
     normalizeCatalogImageUrl('https://drive.google.com/open?id=999xyz_123'),
-    'https://drive.google.com/thumbnail?id=999xyz_123&sz=w1000',
+    'https://lh3.googleusercontent.com/d/999xyz_123',
+  );
+  assert.equal(
+    convertGoogleDriveUrlToDirect('https://drive.google.com/file/d/sample_file_id_456/edit'),
+    'https://lh3.googleusercontent.com/d/sample_file_id_456',
+  );
+  assert.equal(
+    extractGoogleDriveFileId('https://lh3.googleusercontent.com/d/existing_lh3_id'),
+    'existing_lh3_id',
   );
   assert.equal(
     normalizeCatalogImageUrl('https://cdn.example.com/kit.jpg'),
     'https://cdn.example.com/kit.jpg',
+  );
+  assert.equal(
+    normalizeCatalogImageUrl('data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=='),
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==',
   );
 });
 

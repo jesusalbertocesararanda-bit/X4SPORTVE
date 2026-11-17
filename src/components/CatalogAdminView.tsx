@@ -17,6 +17,8 @@ import {
   buildShareableCatalogUrl,
   CATALOG_WHATSAPP_ADVISORS,
   compressCatalogImageFile,
+  convertGoogleDriveUrlToDirect,
+  extractGoogleDriveFileId,
   normalizeCatalogImageUrl,
   normalizeCatalogModelKey,
   resolveCatalogKeywords,
@@ -207,12 +209,15 @@ export function CatalogAdminView({
       });
       return;
     }
+    const isDrive = extractGoogleDriveFileId(raw) !== null;
     const normalized = normalizeCatalogImageUrl(raw);
     onSaveCatalogPhoto(entry.key, normalized);
     setUrlDrafts((prev) => ({ ...prev, [entry.key]: normalized }));
     setStatusFeedback({
       type: 'success',
-      text: `Enlace de imagen guardado para "${entry.model} (${entry.version})".`,
+      text: isDrive
+        ? `Enlace de Google Drive optimizado automáticamente a imagen directa (${normalized}) para "${entry.model}".`
+        : `Enlace de imagen guardado para "${entry.model} (${entry.version})".`,
     });
   };
 
@@ -524,27 +529,32 @@ export function CatalogAdminView({
                     </div>
 
                     {/* Enlace Google Drive o URL */}
-                    <div className="flex gap-1.5">
-                      <input
-                        type="url"
-                        value={urlVal.startsWith('data:image/') ? '' : urlVal}
-                        onChange={(e) =>
-                          setUrlDrafts((prev) => ({
-                            ...prev,
-                            [entry.key]: e.target.value,
-                          }))
-                        }
-                        placeholder="Pega URL de imagen o enlace de Google Drive..."
-                        aria-label={`URL de foto para ${entry.model}`}
-                        className="min-h-[34px] flex-1 rounded-lg border border-slate-700 bg-[#070D19] px-2.5 py-1 text-[11px] text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleSaveUrl(entry)}
-                        className="min-h-[34px] rounded-lg border border-slate-700 bg-[#0D1526] px-2.5 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-800 hover:text-white shrink-0"
-                      >
-                        Guardar URL
-                      </button>
+                    <div className="space-y-1">
+                      <div className="flex gap-1.5">
+                        <input
+                          type="url"
+                          value={urlVal.startsWith('data:image/') ? '' : urlVal}
+                          onChange={(e) =>
+                            setUrlDrafts((prev) => ({
+                              ...prev,
+                              [entry.key]: e.target.value,
+                            }))
+                          }
+                          placeholder="Pega enlace de Google Drive (compartir) o URL..."
+                          aria-label={`URL de foto para ${entry.model}`}
+                          className="min-h-[34px] flex-1 rounded-lg border border-slate-700 bg-[#070D19] px-2.5 py-1 text-[11px] text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSaveUrl(entry)}
+                          className="min-h-[34px] rounded-lg border border-blue-500/40 bg-blue-600/20 px-2.5 py-1 text-[11px] font-semibold text-blue-200 hover:bg-blue-600/30 hover:text-white shrink-0 transition-colors"
+                        >
+                          Guardar URL
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-slate-400">
+                        ☁️ Soporta enlaces de Google Drive (<span className="text-slate-300 font-mono">drive.google.com/file/d/...</span>): se convierten a visualización directa (<span className="text-slate-300 font-mono">lh3.googleusercontent.com/d/...</span>) ahorrando almacenamiento local.
+                      </p>
                     </div>
 
                     {/* Etiquetas / jugadores para buscador */}

@@ -5,6 +5,7 @@ import {
   Check,
   CheckCheck,
   Clock,
+  LogOut,
   Menu,
   Package,
   RotateCcw,
@@ -15,8 +16,13 @@ import type { TabId } from '../types/erp';
 import type { OperationalAlert } from '../utils/finance';
 import { getUnseenAlertCount } from '../utils/notifications';
 
+import type { ERPUser } from '../utils/auth';
+
 interface AppHeaderProps {
   moduleTitle: string;
+  currentUser: ERPUser | null;
+  onLogout: () => void;
+  isSynced: boolean;
   alerts: OperationalAlert[];
   seenAlertIds: string[];
   onToggleAlertSeen: (alertId: string) => void;
@@ -28,6 +34,9 @@ interface AppHeaderProps {
 
 export function AppHeader({
   moduleTitle,
+  currentUser,
+  onLogout,
+  isSynced,
   alerts,
   seenAlertIds,
   onToggleAlertSeen,
@@ -86,6 +95,33 @@ export function AppHeader({
           >
             {moduleTitle}
           </h2>
+
+          {currentUser && (
+            <div className="flex items-center gap-2 rounded-xl border border-slate-800 bg-[#0D1526] px-2.5 py-1 text-xs text-slate-300 shrink-0">
+              <span
+                className={`flex h-2 w-2 rounded-full ${
+                  isSynced ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500 animate-ping'
+                }`}
+                title={isSynced ? 'Sincronizado en tiempo real' : 'Sincronizando...'}
+              />
+              <span className="font-medium text-white max-w-[100px] sm:max-w-none truncate">
+                {currentUser.name}
+              </span>
+              <span className="hidden md:inline text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 font-semibold">
+                {currentUser.role === 'admin' ? 'Admin' : 'Socio'}
+              </span>
+              <button
+                type="button"
+                data-testid="btn-logout"
+                onClick={onLogout}
+                title="Cerrar sesión"
+                className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg px-2.5 py-1 ml-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+              >
+                <LogOut className="h-3.5 w-3.5 text-red-400 shrink-0" aria-hidden="true" />
+                <span className="hidden sm:inline">Cerrar Sesión</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* ÚNICAMENTE dos botones a la derecha: Hacer Venta y Notificaciones */}

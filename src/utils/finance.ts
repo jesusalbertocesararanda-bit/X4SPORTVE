@@ -9,9 +9,11 @@ import {
   INITIAL_RECEIVABLES,
   PARTNER_SHARES,
 } from '../data/initialState';
+import { getMergedAuthorizedUsers, getStoredActiveUser } from './auth';
 import type {
   AppState,
   AuditMovement,
+  AuthorizedUserRecord,
   CapitalInjectionDestination,
   CapitalInjectionRecord,
   CustomerProfile,
@@ -876,6 +878,9 @@ export function registerMultiItemSale(
     ),
   };
 
+  const activeUser = getStoredActiveUser();
+  const currentUserName = activeUser ? activeUser.name : 'Jesús César';
+
   const firstLine = resolvedLines[0];
   const saleRecord: SaleRecord = {
     id: saleId,
@@ -905,6 +910,7 @@ export function registerMultiItemSale(
     debtorName: input.paymentStatus === 'Pendiente' ? cleanDebtor : undefined,
     deliveryDate: input.deliveryDate?.trim() || undefined,
     breakdown,
+    userName: currentUserName,
     createdAt: now,
   };
 
@@ -1173,6 +1179,9 @@ export function createImportOrder(
 
   const estimatedArrivalDate = input.estimatedArrivalDate?.trim() || undefined;
 
+  const activeUser = getStoredActiveUser();
+  const currentUserName = activeUser ? activeUser.name : 'Jesús César';
+
   const batchRecord: PurchaseBatchRecord = {
     id: batchId,
     status: 'EN TRÁNSITO',
@@ -1190,6 +1199,7 @@ export function createImportOrder(
     totalLandedCost,
     usdtRate: batchUsdtRate,
     items: batchItems,
+    userName: currentUserName,
     createdAt: now,
   };
 
@@ -2384,6 +2394,9 @@ export function adjustInventoryPhysicalCount(
       : item,
   );
 
+  const activeUser = getStoredActiveUser();
+  const currentUserName = activeUser ? activeUser.name : 'Jesús César';
+
   const adjustmentRecord: InventoryAdjustmentRecord = {
     id: `adj-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     skuId: target.id,
@@ -2396,6 +2409,7 @@ export function adjustInventoryPhysicalCount(
     fifoLossCost,
     auditMode: 'manual',
     reason,
+    userName: currentUserName,
     createdAt: now,
   };
 
@@ -3113,6 +3127,9 @@ export function normalizeAppState(raw: unknown): AppState {
       ...(parsed.catalogKeywords && typeof parsed.catalogKeywords === 'object'
         ? { catalogKeywords: { ...parsed.catalogKeywords } }
         : {}),
+      authorizedUsers: getMergedAuthorizedUsers(
+        parsed.authorizedUsers ? toArray<AuthorizedUserRecord>(parsed.authorizedUsers) : undefined,
+      ),
       historicalNetProfit:
         typeof parsed.historicalNetProfit === 'number' &&
         Number.isFinite(parsed.historicalNetProfit)

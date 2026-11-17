@@ -6,20 +6,33 @@ import {
   Download,
   FileSpreadsheet,
   Globe,
+  Plus,
   RefreshCcw,
   RefreshCw,
   Settings,
+  ShieldAlert,
   Store,
+  Trash2,
+  UserCheck,
+  UserPlus,
+  Users,
   X,
 } from 'lucide-react';
 import type { RateSyncInfo } from '../App';
-import type { AppState } from '../types/erp';
+import type { AppState, AuthorizedUserRecord } from '../types/erp';
+import {
+  canAccessConfiguration,
+  getMergedAuthorizedUsers,
+  MAIN_ADMIN_EMAIL,
+  type ERPUser,
+} from '../utils/auth';
 import type { GoogleCalendarAuthState } from '../utils/googleCalendar';
 import { buildShareableCatalogUrl } from '../utils/publicCatalog';
 import { GoogleCalendarBanner } from './GoogleCalendarBanner';
 
 interface SettingsModalProps {
   isOpen: boolean;
+  currentUser: ERPUser | null;
   state: AppState;
   rateSync: RateSyncInfo;
   calendarAuth: GoogleCalendarAuthState;
@@ -32,10 +45,12 @@ interface SettingsModalProps {
   onSyncRatesFromApi: () => Promise<{ ok: boolean; error?: string }>;
   onUpdateRates: (bcv: number, usdt: number) => { ok: boolean; error?: string };
   onResetDemoData: () => void;
+  onUpdateAuthorizedUsers?: (users: AuthorizedUserRecord[]) => void;
 }
 
 export function SettingsModal({
   isOpen,
+  currentUser,
   state,
   rateSync,
   calendarAuth,
@@ -48,6 +63,7 @@ export function SettingsModal({
   onSyncRatesFromApi,
   onUpdateRates,
   onResetDemoData,
+  onUpdateAuthorizedUsers,
 }: SettingsModalProps) {
   const [bcvInput, setBcvInput] = useState(state.exchangeRates.bcv.toFixed(2));
   const [usdtInput, setUsdtInput] = useState(state.exchangeRates.usdt.toFixed(2));
@@ -58,6 +74,13 @@ export function SettingsModal({
     type: 'success' | 'error';
     text: string;
   } | null>(null);
+
+  // Form for pre-registering a new authorized user
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserRole, setNewUserRole] = useState<'partner' | 'admin'>('partner');
+  const [newUserPhone, setNewUserPhone] = useState('');
+  const [showAddUserForm, setShowAddUserForm] = useState(false);
 
   const catalogEnabled = state.catalogEnabled !== false;
   const shareableCatalogUrl = buildShareableCatalogUrl();
@@ -92,6 +115,53 @@ export function SettingsModal({
   }, [isOpen, onClose]);
 
   if (!isOpen) return null;
+
+  // Strict check: Only MAIN_ADMIN_EMAIL can enter Configuration
+  if (!canAccessConfiguration(currentUser)) {
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        data-testid="settings-modal-restricted"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
+      >
+        <div className="w-full max-w-md rounded-2xl border border-red-500/40 bg-[#0D1526] p-6 shadow-2xl space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl border border-red-500/40 bg-red-500/15 p-2.5 text-red-400">
+              <ShieldAlert className="h-6 w-6" aria-hidden="true" />
+            </div>
+            <div>
+              <h2 className="font-display text-base font-bold text-white">
+                Control de Seguridad ERP (SAP)
+              </h2>
+              <p className="text-xs text-red-300">
+                Acceso restringido: Solo Administrador Principal ({MAIN_ADMIN_EMAIL})
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-[#080E1C] p-4 text-xs text-slate-300 leading-relaxed space-y-2">
+            <p>
+              El módulo de <strong>Configuración del Sistema</strong> contiene funciones críticas (gestión de usuarios y socios, tasas globales, conexión de Google Calendar y respaldos).
+            </p>
+            <p className="text-slate-400">
+              Tu usuario actual (<span className="text-white font-medium">{currentUser?.name ?? 'Invitado'}</span> &lt;{currentUser?.email ?? 'sin sesión'}&gt;) no posee permisos de Administrador Principal.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full min-h-[42px] flex items-center justify-center rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white transition-colors"
+          >
+            Entendido, volver al ERP
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const authorizedUsersList = getMergedAuthorizedUsers(state.authorizedUsers);
 
   const handleSaveRates = (e: React.FormEvent) => {
     e.preventDefault();
@@ -158,6 +228,90 @@ export function SettingsModal({
     }
   };
 
+  const handleAddAuthorizedUser = (e: React.FormEvent) => {
+    e.preventDefault();
+    setFeedback(null);
+
+    const cleanEmail = newUserEmail.trim().toLowerCase();
+    const cleanName = newUserName.trim();
+
+    if (!cleanEmail || !cleanName) {
+      setFeedback({
+        type: 'error',
+        text: 'Ingresa el nombre completo y correo electrónico del usuario.',
+      });
+      return;
+    }
+
+    const currentUsers = getMergedAuthorizedUsers(state.authorizedUsers);
+    const existing = currentUsers.find(
+      (u) => u.email.toLowerCase() === cleanEmail,
+    );
+
+    if (existing) {
+      setFeedback({
+        type: 'error',
+        text: `El correo "${cleanEmail}" ya está registrado como ${existing.name}.`,
+      });
+      return;
+    }
+
+    const newUser: AuthorizedUserRecord = {
+      id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      email: cleanEmail,
+      name: cleanName,
+      role: newUserRole,
+      title: newUserRole === 'admin' ? 'Administrador Principal' : 'Socio Operativo',
+      phone: newUserPhone.trim() || undefined,
+      firstLoginPending: true,
+      avatarBg: newUserRole === 'admin' ? 'bg-blue-600' : 'bg-emerald-600',
+      createdAt: new Date().toISOString(),
+    };
+
+    const updated = [...currentUsers, newUser];
+    if (onUpdateAuthorizedUsers) {
+      onUpdateAuthorizedUsers(updated);
+    }
+
+    setNewUserName('');
+    setNewUserEmail('');
+    setNewUserPhone('');
+    setNewUserRole('partner');
+    setShowAddUserForm(false);
+    setFeedback({
+      type: 'success',
+      text: `Usuario "${cleanName}" pre-registrado exitosamente. Al iniciar sesión por primera vez, el sistema le pedirá verificar su correo con código OTP y definir su contraseña personal.`,
+    });
+  };
+
+  const handleDeleteUser = (targetEmail: string) => {
+    const cleanEmail = targetEmail.trim().toLowerCase();
+    if (
+      cleanEmail === MAIN_ADMIN_EMAIL.toLowerCase() ||
+      cleanEmail === 'jesus@x4sport.app'
+    ) {
+      setFeedback({
+        type: 'error',
+        text: 'No es posible eliminar al Administrador Principal del sistema.',
+      });
+      return;
+    }
+
+    const currentUsers = getMergedAuthorizedUsers(state.authorizedUsers);
+    const filtered = currentUsers.filter(
+      (u) => u.email.toLowerCase() !== cleanEmail,
+    );
+
+    if (onUpdateAuthorizedUsers) {
+      onUpdateAuthorizedUsers(filtered);
+    }
+
+    setFeedback({
+      type: 'success',
+      text: `Usuario con correo "${targetEmail}" eliminado del sistema.`,
+    });
+  };
+
   return (
     <div
       role="dialog"
@@ -180,7 +334,7 @@ export function SettingsModal({
                 Configuración del Sistema X4SPORT
               </h2>
               <p className="mt-0.5 text-xs text-slate-400">
-                Respaldo Excel, tasas BCV/USDT, exportación portátil y mantenimiento de base de datos.
+                Administrador Principal: <span className="text-white font-medium">{MAIN_ADMIN_EMAIL}</span>
               </p>
             </div>
           </div>
@@ -210,6 +364,178 @@ export function SettingsModal({
             <span>{feedback.text}</span>
           </div>
         )}
+
+        {/* Sección: Gestión de Usuarios y Socios Autorizados (Roles SAP) */}
+        <section className="space-y-4 rounded-xl border border-slate-800 bg-[#080E1C] p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Users className="h-4 w-4 text-blue-400" aria-hidden="true" />
+                Gestión de Usuarios y Socios Autorizados (Roles SAP)
+              </h3>
+              <p className="mt-0.5 text-xs text-slate-400">
+                Pre-registra nuevos socios y colaboradores. En su primer login crearán su contraseña mediante verificación OTP.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowAddUserForm((prev) => !prev)}
+              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-600/15 px-3 py-1.5 text-xs font-semibold text-blue-200 hover:bg-blue-600/25 hover:text-white transition-colors"
+            >
+              {showAddUserForm ? (
+                <>
+                  <X className="h-3.5 w-3.5" />
+                  <span>Cancelar</span>
+                </>
+              ) : (
+                <>
+                  <UserPlus className="h-3.5 w-3.5" />
+                  <span>Pre-registrar Usuario</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Formulario de pre-registro */}
+          {showAddUserForm && (
+            <form
+              onSubmit={handleAddAuthorizedUser}
+              className="rounded-xl border border-blue-500/30 bg-[#070D19] p-4 space-y-3"
+            >
+              <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                <Plus className="h-3.5 w-3.5 text-blue-400" />
+                Pre-registro de Nuevo Usuario ERP
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                    Nombre Completo *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. Carlos Mendoza"
+                    value={newUserName}
+                    onChange={(e) => setNewUserName(e.target.value)}
+                    className="w-full min-h-[38px] rounded-lg border border-slate-700 bg-[#0D1526] px-3 py-1.5 text-xs text-white placeholder:text-slate-600 focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                    Correo Electrónico *
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="carlos@x4sport.app o gmail"
+                    value={newUserEmail}
+                    onChange={(e) => setNewUserEmail(e.target.value)}
+                    className="w-full min-h-[38px] rounded-lg border border-slate-700 bg-[#0D1526] px-3 py-1.5 text-xs text-white placeholder:text-slate-600 focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                    Rol en el ERP
+                  </label>
+                  <select
+                    value={newUserRole}
+                    onChange={(e) =>
+                      setNewUserRole(e.target.value as 'partner' | 'admin')
+                    }
+                    className="w-full min-h-[38px] rounded-lg border border-slate-700 bg-[#0D1526] px-3 py-1.5 text-xs text-white focus:border-blue-500 focus:outline-none"
+                  >
+                    <option value="partner">Socio Operativo</option>
+                    <option value="admin">Administrador Secundario</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                    Teléfono / WhatsApp
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="+58 412-..."
+                    value={newUserPhone}
+                    onChange={(e) => setNewUserPhone(e.target.value)}
+                    className="w-full min-h-[38px] rounded-lg border border-slate-700 bg-[#0D1526] px-3 py-1.5 text-xs text-white placeholder:text-slate-600 focus:border-blue-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="submit"
+                  className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition-colors shadow-sm"
+                >
+                  <UserCheck className="h-3.5 w-3.5" />
+                  <span>Guardar Pre-registro</span>
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* Tabla / Lista de usuarios */}
+          <div className="rounded-xl border border-slate-800 bg-[#070D19] overflow-hidden">
+            <div className="max-h-60 overflow-y-auto divide-y divide-slate-800/80">
+              {authorizedUsersList.map((u) => {
+                const isMainAdmin =
+                  u.email.toLowerCase() === MAIN_ADMIN_EMAIL.toLowerCase();
+                return (
+                  <div
+                    key={u.id}
+                    className="flex items-center justify-between gap-3 p-3 hover:bg-slate-800/30 transition-colors"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div
+                        className={`h-8 w-8 rounded-lg ${
+                          u.avatarBg || 'bg-blue-600'
+                        } flex items-center justify-center text-white text-xs font-bold shrink-0`}
+                      >
+                        {u.name.charAt(0)}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs font-semibold text-white truncate">
+                            {u.name}
+                          </p>
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                            {u.role === 'admin' ? 'Admin' : 'Socio'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 truncate">
+                          {u.email}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {u.firstLoginPending ? (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                          🟡 Primer ingreso pendiente
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                          🟢 Activo
+                        </span>
+                      )}
+
+                      {!isMainAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteUser(u.email)}
+                          title={`Eliminar acceso a ${u.name}`}
+                          className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </section>
 
         {/* Integración Google Calendar */}
         <GoogleCalendarBanner

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Loader2 } from 'lucide-react';
+import { AlertTriangle, Loader2, Sparkles, X } from 'lucide-react';
 import { AppHeader } from './components/AppHeader';
 import { AuditView } from './components/AuditView';
 import { BulkImportView } from './components/BulkImportView';
@@ -8,6 +8,7 @@ import { DashboardView } from './components/DashboardView';
 import { ExcelImportModal } from './components/ExcelImportModal';
 import { FinanceView } from './components/FinanceView';
 import { InventoryView } from './components/InventoryView';
+import { LoginModal } from './components/LoginModal';
 import { PublicCatalogView } from './components/PublicCatalogView';
 import { PurchasesView } from './components/PurchasesView';
 import { ReportsView } from './components/ReportsView';
@@ -18,8 +19,18 @@ import { Sidebar } from './components/Sidebar';
 import { StatsView } from './components/StatsView';
 import { SupplierPriceHistoryView } from './components/SupplierPriceHistoryView';
 import { createInitialState } from './data/initialState';
+import {
+  canAccessConfiguration,
+  ERPUser,
+  getStoredActiveUser,
+  isAdminUser,
+  MAIN_ADMIN_EMAIL,
+  saveAuthorizedUsersToStorage,
+  storeActiveUser,
+} from './utils/auth';
 import type {
   AppState,
+  AuthorizedUserRecord,
   PartnerName,
   PaymentMethod,
   PurchaseBatchRecord,
@@ -129,6 +140,68 @@ export default function App() {
     needsAuth: true,
     isConnecting: false,
   });
+  const [currentUser, setCurrentUser] = useState<ERPUser | null>(() => getStoredActiveUser());
+  const [loginToast, setLoginToast] = useState<string | null>(null);
+  const [restrictedToast, setRestrictedToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!loginToast) return;
+    const timer = setTimeout(() => {
+      setLoginToast(null);
+    }, 3500);
+    return () => clearTimeout(timer);
+  }, [loginToast]);
+
+  useEffect(() => {
+    if (!restrictedToast) return;
+    const timer = setTimeout(() => {
+      setRestrictedToast(null);
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [restrictedToast]);
+
+  const handleLoginSuccess = useCallback((user: ERPUser) => {
+    storeActiveUser(user);
+    setCurrentUser(user);
+    setLoginToast(`¡Bienvenido, ${user.name}!`);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    storeActiveUser(null);
+    setCurrentUser(null);
+  }, []);
+
+  const handleUpdateAuthorizedUsers = useCallback((users: AuthorizedUserRecord[]) => {
+    saveAuthorizedUsersToStorage(users);
+    setState((prev) => {
+      const next: AppState = {
+        ...prev,
+        authorizedUsers: users,
+      };
+      saveLocalStateBackup(next, { allowOverwriteEmpty: true });
+      void writeErpState(next).catch((err: unknown) => {
+        setDbError(formatFirebaseError(err));
+      });
+      return next;
+    });
+  }, []);
+
+  const handleOpenSettings = useCallback(() => {
+    if (!canAccessConfiguration(currentUser)) {
+      setRestrictedToast(
+        `Acceso restringido: Solo Administrador Principal (${MAIN_ADMIN_EMAIL})`,
+      );
+      return;
+    }
+    setIsSettingsOpen(true);
+  }, [currentUser]);
+
+  const checkAdminPermission = useCallback((actionName: string): boolean => {
+    if (isAdminUser(currentUser)) return true;
+    setRestrictedToast(`Acceso restringido (${actionName}): Solo Administrador Principal (${MAIN_ADMIN_EMAIL})`);
+    return false;
+  }, [currentUser]);
+
   const [localSeenAlertIds, setLocalSeenAlertIds] = useState<string[]>(() => {
     try {
       if (typeof window === 'undefined' || !window.localStorage) return [];
@@ -486,13 +559,24 @@ export default function App() {
 
   const handleRegisterCapitalInjection = (
     input: RegisterCapitalInjectionInput,
-  ) => commitState(registerCapitalInjection(state, input));
+  ): { ok: boolean; error?: string } => {
+    if (!checkAdminPermission('Inyección de Capital / Dinero en Caja')) {
+      return { ok: false, error: 'Acceso restringido: Solo Administrador Principal (Jesús César)' };
+    }
+    return commitState(registerCapitalInjection(state, input));
+  };
 
   const handleReconcileCash = (input: ReconcileCashInput) =>
     commitState(reconcileCashOnHand(state, input));
 
-  const handleAdjustInventoryCount = (input: AdjustInventoryCountInput) =>
-    commitState(adjustInventoryPhysicalCount(state, input));
+  const handleAdjustInventoryCount = (
+    input: AdjustInventoryCountInput,
+  ): { ok: boolean; error?: string } => {
+    if (!checkAdminPermission('Ajustes Manuales de Inventario')) {
+      return { ok: false, error: 'Acceso restringido: Solo Administrador Principal (Jesús César)' };
+    }
+    return commitState(adjustInventoryPhysicalCount(state, input));
+  };
 
   const handleApplyAuditAdjustments = (input: ApplyAuditAdjustmentsInput) =>
     commitState(applyAuditAdjustments(state, input));
@@ -534,6 +618,7 @@ export default function App() {
   );
 
   const handleResetBaselineData = () => {
+    if (!checkAdminPermission('Restablecimiento de Fábrica')) return;
     void resetBaselineStateInFirebase()
       .then((fresh) => {
         setState(fresh);
@@ -545,6 +630,7 @@ export default function App() {
   };
 
   const handleResetDemoData = () => {
+    if (!checkAdminPermission('Restablecimiento de Catálogo Demo')) return;
     void resetErpStateInFirebase()
       .then((fresh) => {
         setState(fresh);
@@ -556,6 +642,7 @@ export default function App() {
   };
 
   const handleApplyImportedState = async (nextState: AppState) => {
+    if (!checkAdminPermission('Cargas Masivas de Datos')) return;
     const cleanNext: AppState = {
       ...nextState,
       userPurgedEmpty: false,
@@ -568,6 +655,7 @@ export default function App() {
   };
 
   const handlePurgeGhostData = async () => {
+    if (!checkAdminPermission('Borrado de Fábrica y Purgado')) return;
     const clean = await purgeAllDataInFirebase(
       state.exchangeRates.bcv,
       state.exchangeRates.usdt,
@@ -654,6 +742,53 @@ export default function App() {
     [],
   );
 
+  if (!isPublicCatalogRoute && !isCatalogPreview && !currentUser) {
+    return (
+      <div className="min-h-screen bg-[#060B16] text-slate-100 flex flex-col items-center justify-center relative">
+        {loginToast && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="fixed top-5 right-5 z-50 flex items-center gap-2.5 rounded-xl border border-emerald-500/40 bg-[#071913]/95 backdrop-blur-md px-4 py-3 text-xs font-semibold text-emerald-200 shadow-2xl transition-all duration-300 animate-in fade-in slide-in-from-top-2"
+          >
+            <Sparkles className="h-4 w-4 text-emerald-400 shrink-0" />
+            <span>{loginToast}</span>
+            <button
+              type="button"
+              onClick={() => setLoginToast(null)}
+              className="ml-2 text-emerald-400/70 hover:text-emerald-200 p-0.5 rounded"
+              aria-label="Cerrar notificación"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+        {restrictedToast && (
+          <div
+            role="alert"
+            className="fixed top-5 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2.5 rounded-xl border border-amber-500/40 bg-[#1f1504]/95 backdrop-blur-md px-4 py-3 text-xs font-semibold text-amber-200 shadow-2xl transition-all duration-300 animate-in fade-in slide-in-from-top-2 max-w-md text-center"
+          >
+            <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+            <span>{restrictedToast}</span>
+            <button
+              type="button"
+              onClick={() => setRestrictedToast(null)}
+              className="ml-2 text-amber-400/70 hover:text-amber-200 p-0.5 rounded shrink-0"
+              aria-label="Cerrar alerta"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+        <LoginModal
+          onLoginSuccess={handleLoginSuccess}
+          authorizedUsers={state.authorizedUsers}
+          onUpdateAuthorizedUsers={handleUpdateAuthorizedUsers}
+        />
+      </div>
+    );
+  }
+
   if (isPublicCatalogRoute || isCatalogPreview) {
     if (isPublicCatalogRoute && isHydratingDb) {
       return (
@@ -679,7 +814,43 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#060B16] text-slate-100 flex">
+    <div className="min-h-screen bg-[#060B16] text-slate-100 flex relative">
+      {loginToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed top-5 right-5 z-50 flex items-center gap-2.5 rounded-xl border border-emerald-500/40 bg-[#071913]/95 backdrop-blur-md px-4 py-3 text-xs font-semibold text-emerald-200 shadow-2xl transition-all duration-300 animate-in fade-in slide-in-from-top-2"
+        >
+          <Sparkles className="h-4 w-4 text-emerald-400 shrink-0" />
+          <span>{loginToast}</span>
+          <button
+            type="button"
+            onClick={() => setLoginToast(null)}
+            className="ml-2 text-emerald-400/70 hover:text-emerald-200 p-0.5 rounded"
+            aria-label="Cerrar notificación"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+      {restrictedToast && (
+        <div
+          role="alert"
+          className="fixed top-5 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2.5 rounded-xl border border-amber-500/40 bg-[#1f1504]/95 backdrop-blur-md px-4 py-3 text-xs font-semibold text-amber-200 shadow-2xl transition-all duration-300 animate-in fade-in slide-in-from-top-2 max-w-md text-center"
+        >
+          <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+          <span>{restrictedToast}</span>
+          <button
+            type="button"
+            onClick={() => setRestrictedToast(null)}
+            className="ml-2 text-amber-400/70 hover:text-amber-200 p-0.5 rounded shrink-0"
+            aria-label="Cerrar alerta"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
       <Sidebar
         activeTab={activeTab}
         isCollapsed={sidebarCollapsed}
@@ -687,12 +858,15 @@ export default function App() {
         onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
         onCloseMobile={() => setMobileSidebarOpen(false)}
         onSelectTab={setActiveTab}
-        onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenSettings={handleOpenSettings}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <AppHeader
           moduleTitle={MODULE_TITLES[activeTab]}
+          currentUser={currentUser}
+          onLogout={handleLogout}
+          isSynced={dbError === null && !isHydratingDb}
           alerts={activeAlerts}
           seenAlertIds={effectiveSeenAlertIds}
           onToggleAlertSeen={handleToggleAlertSeen}
@@ -825,6 +999,7 @@ export default function App() {
 
       <SettingsModal
         isOpen={isSettingsOpen}
+        currentUser={currentUser}
         state={state}
         rateSync={rateSync}
         calendarAuth={calendarAuth}
@@ -837,6 +1012,7 @@ export default function App() {
         onSyncRatesFromApi={syncRatesFromApi}
         onUpdateRates={handleUpdateRates}
         onResetDemoData={handleResetDemoData}
+        onUpdateAuthorizedUsers={handleUpdateAuthorizedUsers}
       />
 
       <ExcelImportModal

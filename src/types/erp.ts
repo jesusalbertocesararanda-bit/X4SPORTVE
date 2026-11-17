@@ -142,6 +142,7 @@ export interface SaleRecord {
   calendarEventId?: string;
   calendarEventLink?: string;
   breakdown: FourLayerBreakdown;
+  userName?: string;
   createdAt: string;
 }
 
@@ -214,6 +215,7 @@ export interface PurchaseBatchRecord {
   totalLandedCost: number;
   usdtRate?: number; // Tasa USDT real del lote (editable / importada de Excel)
   items: PurchaseBatchItemRecord[];
+  userName?: string;
   createdAt: string;
   receivedAt?: string;
 }
@@ -268,6 +270,7 @@ export interface InventoryAdjustmentRecord {
   fifoLossCost?: number;
   auditMode?: 'cascade' | 'sku' | 'manual';
   reason: string;
+  userName?: string;
   createdAt: string;
 }
 
@@ -324,6 +327,19 @@ export interface CustomerProfile {
   updatedAt: string;
 }
 
+export interface AuthorizedUserRecord {
+  id: string;
+  email: string;
+  name: string;
+  role: 'admin' | 'partner';
+  title?: string;
+  phone?: string;
+  password?: string;
+  firstLoginPending: boolean;
+  avatarBg?: string;
+  createdAt: string;
+}
+
 export interface AppState {
   cashOnHand: number;
   exchangeRates: ExchangeRates;
@@ -348,4 +364,5 @@ export interface AppState {
   isExplicitDemo?: boolean;
   funds: FinancialFunds;
   movements: AuditMovement[];
+  authorizedUsers?: AuthorizedUserRecord[];
 }

@@ -21,6 +21,7 @@ import {
   filterPublicCatalogGroups,
   filterUpcomingTransitCards,
   getCurrentWhatsAppTurnIndex,
+  isRateValid,
   type PublicCatalogProduct,
   type PublicCatalogTeamGroup,
   type PublicTransitCard,
@@ -162,12 +163,22 @@ function CatalogProductCard({
               {formatUSD(currentPrice)}{' '}
               <span className="text-xs font-semibold text-slate-400">USDT</span>
             </span>
-            <span
-              data-testid="catalog-price-bs"
-              className="font-mono-num text-xs font-semibold text-blue-300"
-            >
-              {formatVES(calculateCatalogBsPrice(currentPrice, usdtRate))}
-            </span>
+            {calculateCatalogBsPrice(currentPrice, usdtRate) !== null ? (
+              <span
+                data-testid="catalog-price-bs"
+                className="font-mono-num text-xs font-semibold text-blue-300"
+              >
+                {formatVES(calculateCatalogBsPrice(currentPrice, usdtRate)!)}
+              </span>
+            ) : (
+              <span
+                data-testid="catalog-price-bs-updating"
+                className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-300 border border-amber-500/25"
+                title="Tasa de cambio no disponible o en actualización"
+              >
+                ⚠️ Precio en Bs en actualización
+              </span>
+            )}
           </div>
 
           <a
@@ -291,12 +302,22 @@ function CatalogTransitCard({
                 {formatUSD(card.salePrice)}{' '}
                 <span className="text-xs font-semibold text-slate-400">USDT</span>
               </span>
-              <span
-                data-testid="transit-price-bs"
-                className="font-mono-num text-xs font-semibold text-blue-300"
-              >
-                {formatVES(calculateCatalogBsPrice(card.salePrice, usdtRate))}
-              </span>
+              {calculateCatalogBsPrice(card.salePrice, usdtRate) !== null ? (
+                <span
+                  data-testid="transit-price-bs"
+                  className="font-mono-num text-xs font-semibold text-blue-300"
+                >
+                  {formatVES(calculateCatalogBsPrice(card.salePrice, usdtRate)!)}
+                </span>
+              ) : (
+                <span
+                  data-testid="transit-price-bs-updating"
+                  className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-300 border border-amber-500/25"
+                  title="Tasa de cambio no disponible o en actualización"
+                >
+                  ⚠️ Precio en Bs en actualización
+                </span>
+              )}
             </div>
           ) : (
             <p className="text-xs text-slate-400">Precio referencial al llegar</p>
@@ -496,9 +517,15 @@ export function PublicCatalogView({
               Tasa USDT hoy (Ref. Bs):
             </span>
             <span className="sm:hidden text-slate-400">Tasa USDT:</span>
-            <strong className="font-mono-num text-sm font-bold text-blue-300">
-              Bs. {usdtRate.toFixed(2)} / USDT
-            </strong>
+            {isRateValid(usdtRate) ? (
+              <strong className="font-mono-num text-sm font-bold text-blue-300">
+                Bs. {usdtRate.toFixed(2)} / USDT
+              </strong>
+            ) : (
+              <span className="text-[11px] text-amber-300 font-medium">
+                ⚠️ En actualización
+              </span>
+            )}
           </div>
 
           {isPreviewMode && onExitPreview && (
