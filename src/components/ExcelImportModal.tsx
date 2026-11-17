@@ -139,7 +139,7 @@ export function ExcelImportModal({
       setPendingState(null);
       setSelectedFileName(null);
       setSuccessMsg(
-        'Datos fantasma eliminados. Base de datos limpia con los saldos fijos iniciales en USDT ($120.19 caja, $263.50 CxC desglosada, $1,912.35 capital, $624.00 gastos y $317.37 ganancia neta histórica).',
+        'Datos fantasma eliminados. Base de datos limpia con los saldos fijos iniciales en USDT ($135.19 caja, $263.50 CxC desglosada, $1,912.35 capital, $624.00 gastos y $317.37 ganancia neta histórica).',
       );
     } catch (err) {
       setErrorMsg(
@@ -283,7 +283,7 @@ export function ExcelImportModal({
                   </strong>{' '}
                   · Finanzas →{' '}
                   <strong className="text-slate-200">
-                    {preview.detectedSheets.finanzas ?? 'Valores base ($120.19 / $263.50)'}
+                    {preview.detectedSheets.finanzas ?? 'Valores base ($135.19 / $263.50)'}
                   </strong>
                 </p>
               </div>

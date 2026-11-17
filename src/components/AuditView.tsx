@@ -83,6 +83,17 @@ export function AuditView({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [showConfirmModal]);
 
+  const teamFilters = useMemo(() => {
+    const present = new Set(state.inventory.map((i) => i.team));
+    const orderedCanonical = TEAM_FILTERS.filter(
+      (t) => t !== 'Todos' && present.has(t),
+    );
+    const customTeams = Array.from(present)
+      .filter((t) => !TEAM_FILTERS.includes(t))
+      .sort();
+    return ['Todos', ...orderedCanonical, ...customTeams];
+  }, [state.inventory]);
+
   const allGroups = useMemo(
     () => getInventoryCascadeGroups(state.inventory),
     [state.inventory],
@@ -275,7 +286,7 @@ export function AuditView({
       if (hasUneditedMismatch) {
         setFeedback({
           type: 'error',
-          text: 'Hay grupos con descuadre abierto: ajusta las cantidades reales en el desglose por talla (S, M, L, XL) para localizar exactamente dónde está la diferencia antes de aplicar.',
+          text: 'Hay grupos con descuadre abierto: ajusta las cantidades reales en el desglose por talla (S, M, L, XL, XXL) para localizar exactamente dónde está la diferencia antes de aplicar.',
         });
         return;
       }
@@ -492,7 +503,7 @@ export function AuditView({
           </div>
 
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0">
-            {TEAM_FILTERS.map((team) => {
+            {teamFilters.map((team) => {
               const active = teamFilter === team;
               return (
                 <button

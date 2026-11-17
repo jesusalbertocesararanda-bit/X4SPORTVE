@@ -31,6 +31,7 @@ import type {
 } from '../types/erp';
 import {
   calculateFourLayerMatrixConsolidated,
+  formatInvoiceNumber,
   formatUSD,
   previewFifoConsumption,
   round2,
@@ -280,7 +281,8 @@ export function normalizeJerseySize(rawSize: unknown): JerseySize {
   if (s === 'S' || s === 'SMALL' || s === 'CH' || s === 'P') return 'S';
   if (s === 'M' || s === 'MEDIUM' || s === 'MEDIANA') return 'M';
   if (s === 'L' || s === 'LARGE' || s === 'GRANDE') return 'L';
-  if (s === 'XL' || s === '2XL' || s === 'XXL' || s === 'EXTRALARGE') {
+  if (s === 'XXL' || s === '2XL' || s === 'XXLARGE') return 'XXL';
+  if (s === 'XL' || s === 'EXTRALARGE') {
     return 'XL';
   }
   return 'M';
@@ -1562,6 +1564,7 @@ export function buildErpStateFromSheets(
     const saleIso = `${sale.date}T12:00:00.000Z`;
     const saleRecord: SaleRecord = {
       id: `sale-xlsx-${i + 1}`,
+      invoiceNumber: formatInvoiceNumber(i + 1),
       skuId: sku.id,
       modelLabel: sku.model,
       team: sku.team,
@@ -1625,6 +1628,7 @@ export function buildErpStateFromSheets(
     receivables: finanzasParsed.receivables,
     collectedReceivablesCount: 0,
     sales: salesHistory,
+    nextInvoiceSeq: salesHistory.length + 1,
     purchases: purchaseRecords,
     purchaseBatches,
     operatingExpenses: finanzasParsed.operatingExpenses,
@@ -1771,7 +1775,7 @@ export function downloadExcelTemplateWithSheetJS(): boolean {
 
   const finanzasAoa = [
     ['Concepto / Indicador', 'Valor (USDT / Tasa)'],
-    ['Efectivo físico en caja', 120.19],
+    ['Efectivo físico en caja', 135.19],
     ['Cuentas por cobrar', 263.5],
     ['Capital inyectado total', 1912.35],
     ['Gastos operativos totales', 624.0],

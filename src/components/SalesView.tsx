@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   CheckCircle2,
+  Download,
+  FileImage,
   Percent,
   Plus,
+  Search,
   ShoppingBag,
   Tag,
   Trash2,
+  X,
 } from 'lucide-react';
 import type {
   AppState,
@@ -14,6 +18,7 @@ import type {
   PaymentMethod,
   PaymentSplit,
   PaymentStatus,
+  SaleRecord,
   SellerName,
   SinglePaymentMethod,
 } from '../types/erp';
@@ -23,17 +28,21 @@ import {
   calculateFourLayerMatrixConsolidated,
   formatUSD,
   formatVES,
-  getNextFifoUnitCost,
+  normalizeVersionDisplay,
   previewFifoConsumption,
   round2,
   WHOLESALE_DISCOUNT_PCT,
 } from '../utils/finance';
+import {
+  downloadJpgDataUrl,
+  renderSaleReceiptJpgDataUrl,
+} from '../utils/receiptJpg';
 
 interface SalesViewProps {
   state: AppState;
   onRegisterMultiSale: (
     input: RegisterMultiSaleInput,
-  ) => { ok: boolean; error?: string };
+  ) => { ok: boolean; error?: string; createdSale?: SaleRecord };
 }
 
 interface CartLine {
@@ -70,6 +79,7 @@ const INITIAL_MIXED_SPLITS: Record<SinglePaymentMethod, string> = {
 
 export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
   const [cart, setCart] = useState<CartLine[]>([]);
+  const [modelSearch, setModelSearch] = useState<string>('');
   const [selectedSkuId, setSelectedSkuId] = useState<string>('');
   const [quantity, setQuantity] = useState<string>('1');
   const [unitPrice, setUnitPrice] = useState<string>('30.00');
@@ -77,7 +87,11 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
   const [discountType, setDiscountType] = useState<'pct' | 'usd'>('usd');
   const [discountAmountInput, setDiscountAmountInput] = useState<string>('');
 
+  // Optional flexible customer fields
   const [customerName, setCustomerName] = useState<string>('');
+  const [customerCity, setCustomerCity] = useState<string>('');
+  const [customerPhone, setCustomerPhone] = useState<string>('');
+
   const [seller, setSeller] = useState<SellerName>('Jesús');
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('Cobrado');
   const [paymentMethod, setPaymentMethod] =
@@ -88,6 +102,16 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
     type: 'success' | 'error';
     text: string;
   } | null>(null);
+
+  // Invoice search & auto-generated JPG receipt state
+  const [invoiceSearch, setInvoiceSearch] = useState<string>('');
+  const [receiptPreview, setReceiptPreview] = useState<{
+    sale: SaleRecord;
+    dataUrl: string;
+  } | null>(null);
+  const [generatingReceiptId, setGeneratingReceiptId] = useState<string | null>(
+    null,
+  );
 
   const qtyInCartBySku = useMemo(() => {
     const map = new Map<string, number>();
@@ -103,14 +127,29 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
         .filter((item) => item.stock - (qtyInCartBySku.get(item.id) ?? 0) > 0)
         .sort(
           (a, b) =>
-            a.team.localeCompare(b.team) || a.model.localeCompare(b.model),
+            a.model.localeCompare(b.model) ||
+            a.version.localeCompare(b.version) ||
+            a.size.localeCompare(b.size),
         ),
     [qtyInCartBySku, state.inventory],
   );
 
+  const filteredSelectorSkus = useMemo(() => {
+    const q = modelSearch.trim().toLowerCase();
+    if (!q) return availableSkus;
+    return availableSkus.filter((item) => {
+      const ver = normalizeVersionDisplay(item.version).toLowerCase();
+      return (
+        item.model.toLowerCase().includes(q) ||
+        ver.includes(q) ||
+        item.size.toLowerCase().includes(q)
+      );
+    });
+  }, [availableSkus, modelSearch]);
+
   const effectiveSkuId = availableSkus.some((s) => s.id === selectedSkuId)
     ? selectedSkuId
-    : (availableSkus[0]?.id ?? '');
+    : (filteredSelectorSkus[0]?.id ?? availableSkus[0]?.id ?? '');
 
   const activeSku = availableSkus.find((s) => s.id === effectiveSkuId) ?? null;
   const remainingForActiveSku = activeSku
@@ -179,6 +218,17 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
     seller,
   ]);
 
+  const handleSelectModelCard = (skuId: string) => {
+    setSelectedSkuId(skuId);
+    const found = availableSkus.find((s) => s.id === skuId);
+    if (found) {
+      setUnitPrice(found.salePrice.toFixed(2));
+      setPricingMode('normal');
+      setDiscountAmountInput('');
+    }
+    setFeedback(null);
+  };
+
   const handleToggleWholesale = () => {
     if (!activeSku) return;
     setFeedback(null);
@@ -206,7 +256,8 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
     }
     const nextMode: PricingAdjustMode =
       discountType === 'pct' ? 'discount_pct' : 'discount_usd';
-    const defaultVal = discountAmountInput || (discountType === 'pct' ? '10' : '2');
+    const defaultVal =
+      discountAmountInput || (discountType === 'pct' ? '10' : '2');
     setPricingMode(nextMode);
     setDiscountAmountInput(defaultVal);
     const res = calculateDiscountedUnitPrice(
@@ -217,7 +268,10 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
     setUnitPrice(res.unitPrice.toFixed(2));
   };
 
-  const handleDiscountAmountChange = (rawVal: string, nextType = discountType) => {
+  const handleDiscountAmountChange = (
+    rawVal: string,
+    nextType = discountType,
+  ) => {
     setDiscountAmountInput(rawVal);
     setFeedback(null);
     if (!activeSku) return;
@@ -347,6 +401,28 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
     cartFifoSimulation.totalAmount - mixedAllocatedTotal,
   );
 
+  const openOrDownloadSaleReceipt = async (
+    sale: SaleRecord,
+    autoDownload: boolean,
+  ) => {
+    setGeneratingReceiptId(sale.id);
+    try {
+      const dataUrl = await renderSaleReceiptJpgDataUrl(
+        sale,
+        state.exchangeRates.bcv,
+      );
+      setReceiptPreview({ sale, dataUrl });
+      if (autoDownload) {
+        const filename = `${sale.invoiceNumber || sale.id}.jpg`;
+        downloadJpgDataUrl(dataUrl, filename);
+      }
+    } catch {
+      // Fail gracefully without blocking sale completion
+    } finally {
+      setGeneratingReceiptId(null);
+    }
+  };
+
   const handleConfirmTotalSale = () => {
     setFeedback(null);
 
@@ -354,14 +430,6 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
       setFeedback({
         type: 'error',
         text: 'Agrega al menos un producto al carrito antes de registrar la venta.',
-      });
-      return;
-    }
-
-    if (!customerName.trim()) {
-      setFeedback({
-        type: 'error',
-        text: 'El campo "Nombre del Cliente" es obligatorio para emitir la venta.',
       });
       return;
     }
@@ -376,7 +444,9 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
 
     const summaryCount = cartFifoSimulation.totalUnits;
     const summaryTotal = cartFifoSimulation.totalAmount;
-    const cleanCustomer = customerName.trim();
+    const cleanCustomer = customerName.trim() || 'Cliente Mostrador';
+    const cleanCity = customerCity.trim() || undefined;
+    const cleanPhone = customerPhone.trim() || undefined;
 
     const res = onRegisterMultiSale({
       items: cart.map((line) => ({
@@ -387,6 +457,8 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
         discountLabel: line.discountLabel,
       })),
       customerName: cleanCustomer,
+      customerCity: cleanCity,
+      customerPhone: cleanPhone,
       seller,
       paymentStatus,
       paymentMethod,
@@ -405,14 +477,46 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
     setCart([]);
     setQuantity('1');
     setCustomerName('');
+    setCustomerCity('');
+    setCustomerPhone('');
     setMixedSplits(INITIAL_MIXED_SPLITS);
+
+    const invoiceTag = res.createdSale?.invoiceNumber
+      ? `Factura ${res.createdSale.invoiceNumber} · `
+      : '';
     setFeedback({
       type: 'success',
-      text: `Venta registrada para ${cleanCustomer} (${summaryCount} ${
+      text: `${invoiceTag}Venta registrada para ${cleanCustomer} (${summaryCount} ${
         summaryCount === 1 ? 'franela' : 'franelas'
-      } · ${formatUSD(summaryTotal)} vía ${paymentMethod}) con descuento FIFO y matriz de 4 capas.`,
+      } · ${formatUSD(summaryTotal)} vía ${paymentMethod}). Comprobante JPG generado.`,
     });
+
+    if (res.createdSale) {
+      void openOrDownloadSaleReceipt(res.createdSale, true);
+    }
   };
+
+  const filteredSalesHistory = useMemo(() => {
+    const q = invoiceSearch.trim().toLowerCase();
+    if (!q) return state.sales;
+    return state.sales.filter((sale) => {
+      const invoice = (sale.invoiceNumber ?? '').toLowerCase();
+      const customer = (sale.customerName ?? '').toLowerCase();
+      const phone = (sale.customerPhone ?? '').toLowerCase();
+      const city = (sale.customerCity ?? '').toLowerCase();
+      const models = (sale.items ?? [])
+        .map((i) => i.modelLabel.toLowerCase())
+        .join(' ');
+      return (
+        invoice.includes(q) ||
+        customer.includes(q) ||
+        phone.includes(q) ||
+        city.includes(q) ||
+        sale.modelLabel.toLowerCase().includes(q) ||
+        models.includes(q)
+      );
+    });
+  }, [invoiceSearch, state.sales]);
 
   const linePreviewSubtotal = round2(
     Math.max(0, Math.floor(Number(quantity) || 0)) *
@@ -435,10 +539,10 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
     <div className="space-y-8">
       <div>
         <h1 className="font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
-          Registro de Ventas Multi-Ítem (FIFO)
+          Ventas y Facturación Digital (FIFO)
         </h1>
         <p className="mt-1 text-sm text-slate-400">
-          Precio automático en USDT al seleccionar producto, ajuste rápido Al Mayor o Rebaja, cliente obligatorio y pagos simples o mixtos.
+          Selecciona modelos en tarjetas limpias, aplica descuentos o Pago Mixto, emite facturas consecutivas JPG y consulta el historial.
         </p>
       </div>
 
@@ -448,15 +552,15 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
             aria-labelledby="add-item-heading"
             className="rounded-xl border border-slate-800 bg-[#0D1526] p-5 sm:p-6"
           >
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <h2
                 id="add-item-heading"
                 className="font-display text-lg font-semibold text-white"
               >
-                1. Agregar Productos al Carrito
+                1. Seleccionar Modelo Disponible
               </h2>
               <span className="font-mono-num text-xs text-slate-400">
-                {availableSkus.length} SKUs disponibles
+                {availableSkus.length} SKUs con stock
               </span>
             </div>
 
@@ -469,51 +573,80 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
             ) : (
               <form onSubmit={handleAddToCart} className="mt-4 space-y-4">
                 <div>
-                  <label
-                    htmlFor="sale-sku"
-                    className="block text-xs font-medium text-slate-300"
-                  >
-                    Producto disponible (Modelo · Versión · Talla)
+                  <label htmlFor="sale-model-search" className="sr-only">
+                    Buscar modelo disponible
                   </label>
-                  <select
-                    id="sale-sku"
-                    required
-                    value={effectiveSkuId}
-                    onChange={(e) => {
-                      const nextId = e.target.value;
-                      setSelectedSkuId(nextId);
-                      const found = availableSkus.find((s) => s.id === nextId);
-                      if (found) {
-                        setUnitPrice(found.salePrice.toFixed(2));
-                        setPricingMode('normal');
-                        setDiscountAmountInput('');
-                      }
-                      setFeedback(null);
-                    }}
-                    className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  >
-                    {availableSkus.map((item) => {
-                      const avail =
-                        item.stock - (qtyInCartBySku.get(item.id) ?? 0);
-                      const fifoCost = getNextFifoUnitCost(item);
-                      return (
-                        <option key={item.id} value={item.id}>
-                          {item.model} — {item.version} · Talla {item.size} (
-                          {avail} disp. · PVP {formatUSD(item.salePrice)} · FIFO{' '}
-                          {formatUSD(fifoCost)})
-                        </option>
-                      );
-                    })}
-                  </select>
+                  <div className="relative">
+                    <Search
+                      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <input
+                      id="sale-model-search"
+                      data-testid="sale-model-search"
+                      type="search"
+                      value={modelSearch}
+                      onChange={(e) => setModelSearch(e.target.value)}
+                      placeholder="Filtrar tarjetas por modelo, versión o talla..."
+                      className="w-full min-h-[40px] rounded-lg border border-slate-700 bg-[#070D19] pl-9 pr-3 py-1.5 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-12">
+                {/* Tarjetas visuales limpias: únicamente Nombre del modelo, Cantidad disponible y Precio */}
+                {filteredSelectorSkus.length === 0 ? (
+                  <p className="rounded-lg border border-slate-800 bg-[#080E1C] p-4 text-xs text-slate-400">
+                    Ningún modelo disponible coincide con &ldquo;{modelSearch}&rdquo;.
+                  </p>
+                ) : (
+                  <div
+                    role="listbox"
+                    aria-label="Tarjetas de modelos disponibles"
+                    className="grid max-h-[290px] grid-cols-1 gap-2.5 overflow-y-auto pr-1 sm:grid-cols-2"
+                  >
+                    {filteredSelectorSkus.map((item) => {
+                      const avail =
+                        item.stock - (qtyInCartBySku.get(item.id) ?? 0);
+                      const isSelected = item.id === effectiveSkuId;
+                      const verLabel = normalizeVersionDisplay(item.version);
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          role="option"
+                          aria-selected={isSelected}
+                          data-testid={`model-card-${item.id}`}
+                          onClick={() => handleSelectModelCard(item.id)}
+                          className={`flex flex-col justify-between rounded-lg border p-3.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+                            isSelected
+                              ? 'border-blue-500 bg-blue-600/15 text-white'
+                              : 'border-slate-800 bg-[#080E1C] text-slate-200 hover:border-slate-600 hover:bg-slate-800/40'
+                          }`}
+                        >
+                          <p className="text-sm font-semibold leading-snug text-white">
+                            {item.model} ({verLabel} · {item.size})
+                          </p>
+                          <div className="mt-2.5 flex items-baseline justify-between gap-2">
+                            <span className="font-mono-num text-xs text-slate-400">
+                              {avail} disp.
+                            </span>
+                            <span className="font-mono-num text-sm font-bold text-blue-300">
+                              {formatUSD(item.salePrice)}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 gap-4 pt-1 sm:grid-cols-12">
                   <div className="sm:col-span-3">
                     <label
                       htmlFor="sale-qty"
                       className="block text-xs font-medium text-slate-300"
                     >
-                      Cantidad (Máx. {remainingForActiveSku})
+                      Cantidad * (Máx. {remainingForActiveSku})
                     </label>
                     <input
                       id="sale-qty"
@@ -537,7 +670,7 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                         htmlFor="sale-unit-price"
                         className="block text-xs font-medium text-slate-300"
                       >
-                        Precio unitario (USDT)
+                        Monto unitario (USDT) *
                       </label>
                       {activeSku && (
                         <span className="font-mono-num text-[11px] text-slate-400">
@@ -663,13 +796,15 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                     </strong>
                     {activeSku && (
                       <span className="ml-2 font-mono-num text-slate-400">
-                        · {formatVES(linePreviewSubtotal * state.exchangeRates.bcv)} BCV
+                        · {formatVES(linePreviewSubtotal * state.exchangeRates.bcv)}{' '}
+                        BCV
                       </span>
                     )}
                   </p>
 
                   <button
                     type="submit"
+                    data-testid="btn-add-to-cart"
                     className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-blue-500/40 bg-blue-600/20 px-4 py-2 text-sm font-semibold text-blue-200 transition-colors hover:bg-blue-600/30 hover:text-white active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 whitespace-nowrap shrink-0"
                   >
                     <Plus className="h-4 w-4" aria-hidden="true" />
@@ -707,7 +842,7 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                   El carrito está vacío
                 </p>
                 <p className="mt-1 text-xs text-slate-400">
-                  Selecciona una camiseta arriba y presiona &ldquo;Agregar al Carrito&rdquo; para iniciar la venta.
+                  Elige una tarjeta de modelo arriba y presiona &ldquo;Agregar al Carrito&rdquo; para iniciar la factura.
                 </p>
               </div>
             ) : (
@@ -747,7 +882,8 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                                 {line.modelLabel}
                               </p>
                               <p className="text-xs text-slate-400">
-                                {line.version} · Talla {line.size}
+                                {normalizeVersionDisplay(line.version)} · Talla{' '}
+                                {line.size}
                                 {line.discountLabel ? (
                                   <span className="text-emerald-400">
                                     {' '}
@@ -775,10 +911,7 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                                 aria-label={`Eliminar ${line.modelLabel} ${line.version} talla ${line.size}`}
                                 className="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-300 transition-colors hover:bg-red-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                               >
-                                <Trash2
-                                  className="h-3.5 w-3.5"
-                                  aria-hidden="true"
-                                />
+                                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                                 Eliminar
                               </button>
                             </td>
@@ -800,7 +933,8 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                           {line.quantity}x {line.modelLabel}
                         </p>
                         <p className="text-xs text-slate-400">
-                          {line.version} · Talla {line.size} ·{' '}
+                          {normalizeVersionDisplay(line.version)} · Talla{' '}
+                          {line.size} ·{' '}
                           <span className="font-mono-num">
                             {formatUSD(line.unitPrice)} c/u
                           </span>
@@ -826,7 +960,8 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
 
                 <div className="mt-4 flex items-center justify-between border-t border-slate-800 pt-3.5">
                   <span className="text-xs font-medium text-slate-400">
-                    Total acumulado del carrito ({cartFifoSimulation.totalUnits} uds)
+                    Total acumulado del carrito ({cartFifoSimulation.totalUnits}{' '}
+                    uds)
                   </span>
                   <span
                     data-testid="cart-total-amount"
@@ -849,10 +984,10 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
               id="global-sale-heading"
               className="font-display text-lg font-semibold text-white"
             >
-              3. Cierre Global y Pago
+              3. Cierre Global y Facturación
             </h2>
             <p className="mt-0.5 text-xs text-slate-400">
-              Aplica a todos los ítems acumulados en el carrito.
+              Obligatorio: modelos, cantidad, monto y condición. Cliente, ciudad y teléfono son opcionales.
             </p>
 
             <div className="mt-4 space-y-4">
@@ -861,13 +996,12 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                   htmlFor="sale-customer-name"
                   className="block text-xs font-medium text-slate-300"
                 >
-                  Nombre del Cliente *
+                  Nombre del Cliente (opcional)
                 </label>
                 <input
                   id="sale-customer-name"
                   type="text"
-                  required
-                  placeholder="Ej. Carlos Mendoza"
+                  placeholder="Opcional · Por defecto: Cliente Mostrador"
                   value={customerName}
                   onChange={(e) => {
                     setCustomerName(e.target.value);
@@ -875,6 +1009,42 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                   }}
                   className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor="sale-customer-city"
+                    className="block text-xs font-medium text-slate-300"
+                  >
+                    Ciudad (opcional)
+                  </label>
+                  <input
+                    id="sale-customer-city"
+                    type="text"
+                    placeholder="Ej. Guacara / Valencia"
+                    value={customerCity}
+                    onChange={(e) => setCustomerCity(e.target.value)}
+                    className="mt-1.5 w-full min-h-[42px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="sale-customer-phone"
+                    className="block text-xs font-medium text-slate-300"
+                  >
+                    Teléfono (opcional)
+                  </label>
+                  <input
+                    id="sale-customer-phone"
+                    type="tel"
+                    placeholder="Ej. 0414-1234567"
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    className="font-mono-num mt-1.5 w-full min-h-[42px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
               </div>
 
               <div>
@@ -931,7 +1101,7 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                     htmlFor="sale-status"
                     className="block text-xs font-medium text-slate-300"
                   >
-                    Estatus de cobro
+                    Condición (Contado / Crédito) *
                   </label>
                   <select
                     id="sale-status"
@@ -942,8 +1112,8 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                     }}
                     className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   >
-                    <option value="Cobrado">Cobrado / Liquidado</option>
-                    <option value="Pendiente">Pendiente / Crédito</option>
+                    <option value="Cobrado">Contado / Cobrado</option>
+                    <option value="Pendiente">Crédito / Pendiente</option>
                   </select>
                 </div>
               </div>
@@ -951,7 +1121,7 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
               {paymentStatus === 'Pendiente' && (
                 <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-200">
                   El saldo pendiente se registrará en Cuentas por Cobrar a nombre de{' '}
-                  <strong>{customerName.trim() || 'este cliente'}</strong>.
+                  <strong>{customerName.trim() || 'Cliente Mostrador'}</strong>.
                 </p>
               )}
 
@@ -959,7 +1129,8 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                 <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3.5 py-2.5 text-xs">
                   <div className="flex items-center justify-between text-blue-200">
                     <span>
-                      Conversión automática Tasa BCV ({state.exchangeRates.bcv.toFixed(2)} Bs/$):
+                      Conversión automática Tasa BCV (
+                      {state.exchangeRates.bcv.toFixed(2)} Bs/$):
                     </span>
                     <strong
                       data-testid="sale-bcv-conversion"
@@ -1053,12 +1224,13 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
 
               <button
                 type="button"
+                data-testid="btn-confirm-total-sale"
                 onClick={handleConfirmTotalSale}
                 disabled={cart.length === 0}
                 className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-500 active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
               >
                 <ShoppingBag className="h-4 w-4" aria-hidden="true" />
-                Registrar Venta Total
+                Registrar Venta y Emitir Factura JPG
               </button>
             </div>
           </section>
@@ -1086,7 +1258,8 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                 {cartFifoSimulation.totalAmount <
                   cartFifoSimulation.totalBaseCost && (
                   <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-                    Aviso: El total del carrito es menor al costo base FIFO ({formatUSD(cartFifoSimulation.totalBaseCost)}). No se generará utilidad neta.
+                    Aviso: El total del carrito es menor al costo base FIFO (
+                    {formatUSD(cartFifoSimulation.totalBaseCost)}). No se generará utilidad neta.
                   </p>
                 )}
 
@@ -1171,25 +1344,55 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
         </div>
       </div>
 
+      {/* Historial de Ventas + Buscador por Número de Factura */}
       <section
         aria-labelledby="recent-sales-heading"
         className="rounded-xl border border-slate-800 bg-[#0D1526] p-5 sm:p-6 overflow-hidden"
       >
-        <div className="flex items-center justify-between gap-4">
-          <h2
-            id="recent-sales-heading"
-            className="font-display text-lg font-semibold text-white"
-          >
-            Historial de Ventas Recientes
-          </h2>
-          <span className="font-mono-num text-xs text-slate-400">
-            {state.sales.length} {state.sales.length === 1 ? 'venta' : 'ventas'}
-          </span>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2
+              id="recent-sales-heading"
+              className="font-display text-lg font-semibold text-white"
+            >
+              Historial de Ventas y Facturas
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-400">
+              Busca cualquier factura por su número consecutivo (ej. FAC-0001) o descarga el comprobante JPG.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="relative w-full sm:w-72">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                aria-hidden="true"
+              />
+              <input
+                type="search"
+                data-testid="sales-invoice-search"
+                aria-label="Buscar venta por número de factura"
+                placeholder="Buscar N° Factura (FAC-0001) o cliente..."
+                value={invoiceSearch}
+                onChange={(e) => setInvoiceSearch(e.target.value)}
+                className="w-full min-h-[40px] rounded-lg border border-slate-700 bg-[#070D19] pl-9 pr-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+
+            <span className="font-mono-num text-xs text-slate-400 shrink-0">
+              {filteredSalesHistory.length}{' '}
+              {filteredSalesHistory.length === 1 ? 'venta' : 'ventas'}
+            </span>
+          </div>
         </div>
 
         {state.sales.length === 0 ? (
           <p className="mt-4 text-sm text-slate-400">
-            Aún no se han registrado ventas en esta sesión. Las ventas confirmadas aparecerán aquí con su cliente, detalle de prendas, método de pago y estatus.
+            Aún no se han registrado ventas en esta sesión. Las ventas confirmadas aparecerán aquí con su número de factura, cliente, detalle de prendas y comprobante JPG.
+          </p>
+        ) : filteredSalesHistory.length === 0 ? (
+          <p className="mt-4 text-sm text-slate-400">
+            No se encontraron facturas que coincidan con &ldquo;{invoiceSearch}&rdquo;.
           </p>
         ) : (
           <>
@@ -1197,17 +1400,18 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-slate-800 bg-[#080E1C] text-xs font-medium text-slate-400">
                   <tr>
-                    <th className="px-4 py-3">Fecha</th>
+                    <th className="px-4 py-3">Factura / Fecha</th>
                     <th className="px-4 py-3">Cliente</th>
                     <th className="px-4 py-3">Vendedor</th>
                     <th className="px-4 py-3">Detalle de Prendas</th>
                     <th className="px-4 py-3">Método de Pago</th>
                     <th className="px-4 py-3 text-right">Total (USDT)</th>
                     <th className="px-4 py-3 text-right">Estatus</th>
+                    <th className="px-4 py-3 text-right">Comprobante</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/70">
-                  {state.sales.map((sale) => {
+                  {filteredSalesHistory.map((sale) => {
                     const lineItems =
                       sale.items && sale.items.length > 0
                         ? sale.items
@@ -1232,14 +1436,28 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
 
                     return (
                       <tr key={sale.id} className="align-top hover:bg-slate-800/30">
-                        <td className="px-4 py-3 font-mono-num text-xs text-slate-300 whitespace-nowrap">
-                          {new Date(sale.createdAt).toLocaleString('es-VE', {
-                            dateStyle: 'short',
-                            timeStyle: 'short',
-                          })}
+                        <td className="px-4 py-3 font-mono-num text-xs whitespace-nowrap">
+                          <span className="block font-bold text-blue-300">
+                            {sale.invoiceNumber || 'FAC-0001'}
+                          </span>
+                          <span className="text-slate-400">
+                            {new Date(sale.createdAt).toLocaleString('es-VE', {
+                              dateStyle: 'short',
+                              timeStyle: 'short',
+                            })}
+                          </span>
                         </td>
-                        <td className="px-4 py-3 text-sm font-semibold text-white whitespace-nowrap">
-                          {sale.customerName || sale.debtorName || 'Cliente Mostrador'}
+                        <td className="px-4 py-3 text-sm whitespace-nowrap">
+                          <span className="block font-semibold text-white">
+                            {sale.customerName || sale.debtorName || 'Cliente Mostrador'}
+                          </span>
+                          {(sale.customerCity || sale.customerPhone) && (
+                            <span className="block text-[11px] text-slate-400">
+                              {[sale.customerCity, sale.customerPhone]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-sm text-slate-200 whitespace-nowrap">
                           {sale.seller}
@@ -1251,7 +1469,9 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                                 <strong className="text-white">
                                   {item.quantity}x
                                 </strong>{' '}
-                                {item.modelLabel} ({item.version} · {item.size}) —{' '}
+                                {item.modelLabel} (
+                                {normalizeVersionDisplay(item.version)} ·{' '}
+                                {item.size}) —{' '}
                                 <span className="font-mono-num">
                                   {formatUSD(item.subtotal)}
                                 </span>
@@ -1305,6 +1525,18 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                               : `Pendiente (${sale.debtorName})`}
                           </span>
                         </td>
+                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                          <button
+                            type="button"
+                            data-testid={`btn-receipt-jpg-${sale.invoiceNumber || sale.id}`}
+                            disabled={generatingReceiptId === sale.id}
+                            onClick={() => void openOrDownloadSaleReceipt(sale, false)}
+                            className="inline-flex min-h-[34px] items-center gap-1.5 rounded-lg border border-slate-700 bg-[#080E1C] px-2.5 py-1 text-xs font-semibold text-blue-200 transition-colors hover:border-blue-500/50 hover:bg-blue-600/20 hover:text-white"
+                          >
+                            <FileImage className="h-3.5 w-3.5" aria-hidden="true" />
+                            Ver / JPG
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
@@ -1313,12 +1545,17 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
             </div>
 
             <div className="mt-4 divide-y divide-slate-800/80 md:hidden">
-              {state.sales.map((sale) => (
-                <div key={sale.id} className="py-3.5 space-y-1.5">
+              {filteredSalesHistory.map((sale) => (
+                <div key={sale.id} className="py-3.5 space-y-2">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-white">
-                      {sale.customerName || 'Cliente'} · {sale.seller}
-                    </span>
+                    <div>
+                      <span className="font-mono-num text-xs font-bold text-blue-300">
+                        {sale.invoiceNumber || 'FAC-0001'}
+                      </span>
+                      <span className="block text-sm font-semibold text-white">
+                        {sale.customerName || 'Cliente'} · {sale.seller}
+                      </span>
+                    </div>
                     <span className="font-mono-num text-sm font-bold text-white">
                       {formatUSD(sale.finalPrice)}
                     </span>
@@ -1327,34 +1564,109 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                     {(sale.items ?? [])
                       .map(
                         (i) =>
-                          `${i.quantity}x ${i.modelLabel} (${i.version} ${i.size})`,
+                          `${i.quantity}x ${i.modelLabel} (${normalizeVersionDisplay(
+                            i.version,
+                          )} ${i.size})`,
                       )
                       .join(', ') || sale.modelLabel}
                   </p>
-                  <p className="text-xs text-slate-400">
-                    {sale.paymentMethod ?? 'Efectivo ($)'}
-                    {sale.bcvEquivalent !== undefined
-                      ? ` (${formatVES(sale.bcvEquivalent)})`
-                      : ''}{' '}
-                    ·{' '}
-                    <span
-                      className={
-                        sale.paymentStatus === 'Cobrado'
-                          ? 'text-emerald-400'
-                          : 'text-amber-400'
-                      }
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs text-slate-400">
+                      {sale.paymentMethod ?? 'Efectivo ($)'} ·{' '}
+                      <span
+                        className={
+                          sale.paymentStatus === 'Cobrado'
+                            ? 'text-emerald-400'
+                            : 'text-amber-400'
+                        }
+                      >
+                        {sale.paymentStatus === 'Cobrado'
+                          ? 'Cobrado'
+                          : `Pendiente (${sale.debtorName})`}
+                      </span>
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void openOrDownloadSaleReceipt(sale, false)}
+                      className="inline-flex min-h-[34px] items-center gap-1 rounded-lg border border-slate-700 bg-[#080E1C] px-2.5 py-1 text-xs font-semibold text-blue-200"
                     >
-                      {sale.paymentStatus === 'Cobrado'
-                        ? 'Cobrado'
-                        : `Pendiente (${sale.debtorName})`}
-                    </span>
-                  </p>
+                      <FileImage className="h-3.5 w-3.5" aria-hidden="true" />
+                      JPG
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
           </>
         )}
       </section>
+
+      {/* Modal Previsualización y Descarga de Comprobante Digital JPG */}
+      {receiptPreview && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="receipt-modal-title"
+          data-testid="receipt-preview-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-xs"
+        >
+          <div className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-slate-700 bg-[#0D1526] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3.5">
+              <div>
+                <h3
+                  id="receipt-modal-title"
+                  className="font-display text-base font-semibold text-white"
+                >
+                  Comprobante Digital {receiptPreview.sale.invoiceNumber}
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Imagen JPG lista para compartir o archivar.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReceiptPreview(null)}
+                aria-label="Cerrar comprobante"
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto bg-[#060B16] p-4 flex justify-center">
+              <img
+                src={receiptPreview.dataUrl}
+                alt={`Comprobante digital ${receiptPreview.sale.invoiceNumber}`}
+                className="max-h-[65vh] w-auto rounded-lg border border-slate-800 object-contain"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2.5 border-t border-slate-800 px-5 py-3.5">
+              <button
+                type="button"
+                onClick={() => setReceiptPreview(null)}
+                className="min-h-[40px] rounded-lg border border-slate-700 bg-[#080E1C] px-4 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+              >
+                Cerrar
+              </button>
+              <button
+                type="button"
+                data-testid="btn-download-receipt-jpg"
+                onClick={() =>
+                  downloadJpgDataUrl(
+                    receiptPreview.dataUrl,
+                    `${receiptPreview.sale.invoiceNumber || receiptPreview.sale.id}.jpg`,
+                  )
+                }
+                className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500"
+              >
+                <Download className="h-4 w-4" aria-hidden="true" />
+                Descargar Comprobante JPG
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createInitialState, PARTNER_SHARES } from '../data/initialState';
+import {
+  createDemoSeedState,
+  createInitialState,
+  PARTNER_SHARES,
+} from '../data/initialState';
 import { parseDolarApiPayload } from './exchangeRatesApi';
 import {
   adjustInventoryPhysicalCount,
@@ -9,15 +13,27 @@ import {
   calculateFourLayerMatrix,
   collectReceivable,
   createImportOrder,
+  EXPENSE_CATEGORIES,
+  extractTeamFromModel,
+  getActiveOperationalAlerts,
+  getCashBackedFundsSummary,
   getInventoryCascadeGroups,
+  getInventorySizeMatrix,
   getLowStockItems,
+  getTotalAllocatedFunds,
   getTotalInventoryCostValue,
   getTotalReceivables,
   getTotalUnits,
+  getTransitAlertStatus,
   getTransitCapitalSummary,
+  isAccidentalDemoCatalogOnly,
+  migrateLegacyInventoryItems,
+  migrateLegacyStateToCurrent,
   normalizeAppState,
+  processReturnOrExchange,
   receiveImportBatch,
   reconcileCashOnHand,
+  recoverStartupErpState,
   registerCapitalInjection,
   registerMultiItemSale,
   registerOperatingExpense,
@@ -29,10 +45,10 @@ import {
   updateExchangeRates,
 } from './finance';
 
-test('initial seed state matches exact mandatory X4SPORT balances', () => {
+test('initial baseline state matches exact mandatory X4SPORT balances without fake demo items', () => {
   const state = createInitialState();
 
-  assert.equal(state.cashOnHand, 120.19);
+  assert.equal(state.cashOnHand, 135.19);
   assert.equal(getTotalReceivables(state), 263.5);
   assert.equal(state.receivables.length, 7);
   assert.deepEqual(
@@ -50,28 +66,8 @@ test('initial seed state matches exact mandatory X4SPORT balances', () => {
   assert.equal(state.capitalInjections[0].amount, 1912.35);
   assert.equal(state.operatingExpenses[0].amount, 624.0);
   assert.equal(state.historicalNetProfit, 317.37);
-  assert.equal(getTotalUnits(state), 176);
-
-  // Verify every initial COGS is between $5.50 and $6.80 and salePrice is configured
-  for (const item of state.inventory) {
-    assert.ok(
-      item.cogs >= 5.5 && item.cogs <= 6.8,
-      `COGS out of range for ${item.model}: ${item.cogs}`,
-    );
-    assert.ok(item.salePrice >= 25, `salePrice missing for ${item.model}`);
-  }
-
-  // Verify all 5 required team groups exist
-  const teams = new Set(state.inventory.map((i) => i.team));
-  for (const required of [
-    'Barcelona',
-    'Real Madrid',
-    'Manchester City',
-    'PSG',
-    'Selecciones',
-  ]) {
-    assert.ok(teams.has(required as never), `Missing team ${required}`);
-  }
+  assert.equal(state.inventory.length, 0);
+  assert.equal(getTotalUnits(state), 0);
 
   // Verify partner shares sum to 100%
   assert.equal(
@@ -79,8 +75,11 @@ test('initial seed state matches exact mandatory X4SPORT balances', () => {
     1,
   );
 
-  // Verify low stock alerts exist for <= 2 units
-  assert.ok(getLowStockItems(state, 2).length > 0);
+  // Explicit demo state keeps the 176-unit test catalog isolated behind opt-in flag
+  const demoState = createDemoSeedState();
+  assert.equal(demoState.isExplicitDemo, true);
+  assert.equal(getTotalUnits(demoState), 176);
+  assert.ok(getLowStockItems(demoState, 2).length > 0);
 });
 
 test('4-layer financial matrix calculates exact splits with assigned seller', () => {
@@ -127,7 +126,7 @@ test('4-layer financial matrix assigns 0 commission when Sin Vendedor', () => {
 });
 
 test('registerSale updates inventory, cash/receivables, and 4-layer funds', () => {
-  const initial = createInitialState();
+  const initial = createDemoSeedState();
   const sku = initial.inventory[0];
 
   const resCash = registerSale(initial, {
@@ -141,7 +140,7 @@ test('registerSale updates inventory, cash/receivables, and 4-layer funds', () =
 
   assert.equal(resCash.ok, true);
   assert.equal(getTotalUnits(resCash.state), 174);
-  assert.equal(resCash.state.cashOnHand, 170.19);
+  assert.equal(resCash.state.cashOnHand, 185.19);
   assert.equal(resCash.state.funds.replacement, 13.0);
   assert.equal(resCash.state.funds.commissions, 2.0);
   assert.equal(resCash.state.funds.commissionsBySeller.Josué, 2.0);
@@ -159,7 +158,7 @@ test('registerSale updates inventory, cash/receivables, and 4-layer funds', () =
 
   assert.equal(resCredit.ok, true);
   assert.equal(getTotalUnits(resCredit.state), 173);
-  assert.equal(resCredit.state.cashOnHand, 170.19);
+  assert.equal(resCredit.state.cashOnHand, 185.19);
   assert.equal(getTotalReceivables(resCredit.state), 288.5);
 
   const resFail = registerSale(resCredit.state, {
@@ -175,7 +174,7 @@ test('registerSale updates inventory, cash/receivables, and 4-layer funds', () =
 });
 
 test('registerPurchase creates a new FIFO batch layer and deducts cash', () => {
-  const initial = createInitialState();
+  const initial = createDemoSeedState();
   const res = registerPurchase(initial, {
     team: 'Barcelona',
     model: 'Barcelona Local 25/26',
@@ -187,7 +186,7 @@ test('registerPurchase creates a new FIFO batch layer and deducts cash', () => {
 
   assert.equal(res.ok, true);
   assert.equal(getTotalUnits(res.state), 186);
-  assert.equal(res.state.cashOnHand, 45.19);
+  assert.equal(res.state.cashOnHand, 60.19);
   const updatedSku = res.state.inventory.find((i) => i.id === 'sku-fcb-1');
   assert.equal(updatedSku?.stock, 20);
   assert.equal(updatedSku?.fifoBatches.length, 2);
@@ -198,14 +197,14 @@ test('registerPurchase creates a new FIFO batch layer and deducts cash', () => {
     model: 'PSG Nuevo Modelo',
     version: 'Fan',
     size: 'M',
-    quantity: 10,
+    quantity: 12,
     unitCostWithFreight: 6.0,
   });
   assert.equal(resInsufficient.ok, false);
 });
 
 test('collectReceivable and reinvestPartnerDividends settle balances accurately', () => {
-  let state = createInitialState();
+  let state = createDemoSeedState();
   const saleRes = registerSale(state, {
     skuId: 'sku-fcb-1',
     quantity: 2,
@@ -243,7 +242,7 @@ test('collectReceivable and reinvestPartnerDividends settle balances accurately'
 });
 
 test('registerMultiItemSale deducts multiple SKUs, consolidates COGS & 4-layer matrix, and prevents duplicate over-sell', () => {
-  const initial = createInitialState();
+  const initial = createDemoSeedState();
   const sku1 = initial.inventory[0];
   const sku2 = initial.inventory[5];
 
@@ -259,7 +258,7 @@ test('registerMultiItemSale deducts multiple SKUs, consolidates COGS & 4-layer m
 
   assert.equal(res.ok, true);
   assert.equal(getTotalUnits(res.state), 173);
-  assert.equal(res.state.cashOnHand, 200.19);
+  assert.equal(res.state.cashOnHand, 215.19);
   assert.equal(res.state.inventory.find((i) => i.id === sku1.id)?.stock, 8);
   assert.equal(res.state.inventory.find((i) => i.id === sku2.id)?.stock, 10);
 
@@ -295,12 +294,12 @@ test('registerMultiItemSale deducts multiple SKUs, consolidates COGS & 4-layer m
 });
 
 test('two-stage import order creates EN TRÁNSITO batch without adding stock, then receiveImportBatch ingests FIFO', () => {
-  let state = createInitialState();
+  let state = createDemoSeedState();
 
   const colRes = collectReceivable(state, 'rec-gabriel', 'Pago Móvil / Bs');
   assert.equal(colRes.ok, true);
   state = colRes.state;
-  assert.equal(state.cashOnHand, 270.19);
+  assert.equal(state.cashOnHand, 285.19);
 
   // Stage 1: Create EN TRÁNSITO order (10 uds, factory $56 + freight est $30 = $86) with custom usdtRate
   const batchRes = createImportOrder(state, {
@@ -331,7 +330,7 @@ test('two-stage import order creates EN TRÁNSITO batch without adding stock, th
 
   assert.equal(batchRes.ok, true);
   state = batchRes.state;
-  assert.equal(state.cashOnHand, round2(270.19 - 86.0));
+  assert.equal(state.cashOnHand, round2(285.19 - 86.0));
   assert.equal(getTotalUnits(state), 176); // Stock MUST NOT increase while EN TRÁNSITO
   assert.equal(state.purchaseBatches.length, 1);
   assert.equal(state.purchaseBatches[0].status, 'EN TRÁNSITO');
@@ -411,15 +410,34 @@ test('parseDolarApiPayload extracts official BCV and parallel USDT rates cleanly
   assert.equal(parseDolarApiPayload({ invalid: true }), null);
 });
 
-test('customerName is required and quick pricing buttons calculate Al Mayor & Descuento accurately', () => {
-  const initial = createInitialState();
-  const missingCustomer = registerMultiItemSale(initial, {
+test('flexible optional customer fields (city/phone), sequential FAC-XXXX invoices, and quick pricing work cleanly', () => {
+  let state = createDemoSeedState();
+  const sale1 = registerMultiItemSale(state, {
     items: [{ skuId: 'sku-fcb-1', quantity: 1, unitPrice: 30 }],
     customerName: '   ',
     seller: 'Jesús',
     paymentStatus: 'Cobrado',
   });
-  assert.equal(missingCustomer.ok, false);
+  assert.equal(sale1.ok, true);
+  assert.equal(sale1.state.sales[0].customerName, 'Cliente Mostrador');
+  assert.equal(sale1.state.sales[0].invoiceNumber, 'FAC-0001');
+  assert.equal(sale1.createdSale?.invoiceNumber, 'FAC-0001');
+  assert.equal(sale1.state.nextInvoiceSeq, 2);
+
+  state = sale1.state;
+  const sale2 = registerMultiItemSale(state, {
+    items: [{ skuId: 'sku-fcb-2', quantity: 1, unitPrice: 30 }],
+    customerName: 'Laura Díaz',
+    customerCity: 'Guacara',
+    customerPhone: '0414-5550199',
+    seller: 'Josué',
+    paymentStatus: 'Cobrado',
+  });
+  assert.equal(sale2.ok, true);
+  assert.equal(sale2.state.sales[0].invoiceNumber, 'FAC-0002');
+  assert.equal(sale2.state.sales[0].customerCity, 'Guacara');
+  assert.equal(sale2.state.sales[0].customerPhone, '0414-5550199');
+  assert.equal(sale2.state.nextInvoiceSeq, 3);
 
   const wholesale = calculateDiscountedUnitPrice(30, 'wholesale');
   assert.equal(wholesale.unitPrice, 24);
@@ -433,7 +451,7 @@ test('customerName is required and quick pricing buttons calculate Al Mayor & De
 });
 
 test('Pago Mixto validates exact split sum and computes BCV conversion for Pago Móvil leg', () => {
-  const initial = createInitialState();
+  const initial = createDemoSeedState();
 
   // Mismatched split sum rejected
   const mismatch = registerMultiItemSale(initial, {
@@ -468,12 +486,12 @@ test('Pago Mixto validates exact split sum and computes BCV conversion for Pago 
     valid.state.sales[0].bcvEquivalent,
     round2(20 * valid.state.exchangeRates.bcv),
   );
-  assert.equal(valid.state.cashOnHand, round2(120.19 + 60));
+  assert.equal(valid.state.cashOnHand, round2(135.19 + 60));
 });
 
-test('registerOperatingExpense (Caja Chica) deducts cash/operating fund and prevents overdraft', () => {
-  let state = createInitialState();
-  // First sell 2x $30 so operatingAndAds > 0 ($60 - $13 COGS - $2.40 comm = $44.60 net -> 10% = $4.46)
+test('registerOperatingExpense enforces mandatory category, rejects physical cash overdraft, and applies proportional 4-layer deficit rule', () => {
+  let state = createDemoSeedState();
+  // Sell 2x $30 ($60 total: $13 replacement, $2.40 comm, $4.46 opFund, $32.11 growth, $8.03 divs)
   const sale = registerMultiItemSale(state, {
     items: [{ skuId: 'sku-fcb-1', quantity: 2, unitPrice: 30 }],
     customerName: 'Cliente A',
@@ -482,29 +500,61 @@ test('registerOperatingExpense (Caja Chica) deducts cash/operating fund and prev
   });
   state = sale.state;
   const opBefore = state.funds.operatingAndAds; // 4.46
-  const cashBefore = state.cashOnHand;
+  const cashBefore = state.cashOnHand; // 195.19
+  const totalFundsBefore = getTotalAllocatedFunds(state.funds); // 60.00
 
-  const overOp = registerOperatingExpense(state, {
-    concept: 'Publicidad IG',
-    amount: 10,
-    source: 'operatingFund',
-  });
-  assert.equal(overOp.ok, false);
-
+  // 1. Expense covered completely by operatingAndAds
   const okOp = registerOperatingExpense(state, {
     concept: 'Bolsas y empaque',
+    category: EXPENSE_CATEGORIES[1],
     amount: 3.5,
     source: 'operatingFund',
     paymentMethod: 'Efectivo ($)',
   });
   assert.equal(okOp.ok, true);
-  assert.equal(okOp.state.funds.operatingAndAds, round2(opBefore - 3.5));
-  assert.equal(okOp.state.cashOnHand, round2(cashBefore - 3.5));
-  assert.equal(okOp.state.operatingExpenses.length, 2);
+  state = okOp.state;
+  assert.equal(state.funds.operatingAndAds, round2(opBefore - 3.5)); // 0.96 left
+  assert.equal(state.cashOnHand, round2(cashBefore - 3.5));
+  assert.equal(state.operatingExpenses[0].category, EXPENSE_CATEGORIES[1]);
+
+  // 2. Expense exceeding operatingAndAds ($0.96 left) -> triggers Deficit Rule across remaining active funds
+  const growthBeforeDeficit = state.funds.growthReinvestment;
+  const repBeforeDeficit = state.funds.replacement;
+  const deficitExpense = registerOperatingExpense(state, {
+    concept: 'Campaña Meta Ads',
+    category: EXPENSE_CATEGORIES[0],
+    amount: 10.96,
+    source: 'operatingFund',
+    paymentMethod: 'Binance USDT',
+  });
+  assert.equal(deficitExpense.ok, true);
+  state = deficitExpense.state;
+  assert.equal(state.funds.operatingAndAds, 0);
+  assert.equal(state.cashOnHand, round2(cashBefore - 3.5 - 10.96));
+  // Deficit = $10.00 distributed proportionally across remaining $55.54 active funds
+  assert.equal(state.operatingExpenses[0].deficitCoveredByFunds, 10.0);
+  assert.ok(state.funds.growthReinvestment < growthBeforeDeficit);
+  assert.ok(state.funds.replacement < repBeforeDeficit);
+  assert.equal(
+    getTotalAllocatedFunds(state.funds),
+    round2(totalFundsBefore - 3.5 - 10.96),
+  );
+
+  // 3. Reject expense exceeding physical cashOnHand
+  const overCash = registerOperatingExpense(state, {
+    concept: 'Retiro imposible',
+    category: EXPENSE_CATEGORIES[2],
+    amount: state.cashOnHand + 50,
+    source: 'cashOnHand',
+  });
+  assert.equal(overCash.ok, false);
+
+  // 4. Verify cash-backed summary invariant holds strictly
+  assert.equal(getCashBackedFundsSummary(state).isStrictlyCashBacked, true);
 });
 
 test('adjustInventoryPhysicalCount adjusts stock and keeps FIFO batch totals synchronized', () => {
-  let state = createInitialState();
+  let state = createDemoSeedState();
 
   // Shortage on sku-fcb-1 (10 -> 8)
   const shrink = adjustInventoryPhysicalCount(state, {
@@ -539,7 +589,7 @@ test('adjustInventoryPhysicalCount adjusts stock and keeps FIFO batch totals syn
 });
 
 test('receiveImportBatch adjusts freight variance on cash/growthReinvestment and prorates across actual arrived units', () => {
-  let state = createInitialState();
+  let state = createDemoSeedState();
   // Sell 5 Player shirts at $30 ($150) so growthReinvestment builds up (~$80.28)
   const sale = registerMultiItemSale(state, {
     items: [{ skuId: 'sku-fcb-1', quantity: 5, unitPrice: 30 }],
@@ -637,7 +687,7 @@ test('receiveImportBatch adjusts freight variance on cash/growthReinvestment and
 });
 
 test('getInventoryCascadeGroups groups SKUs by Model + Version and sums all sizes', () => {
-  const state = createInitialState();
+  const state = createDemoSeedState();
   const groups = getInventoryCascadeGroups(state.inventory);
 
   // Barcelona Local 25/26 Player has M(10) + L(8) = 18 uds
@@ -657,7 +707,7 @@ test('getInventoryCascadeGroups groups SKUs by Model + Version and sums all size
 });
 
 test('applyAuditAdjustments consumes oldest FIFO layer on shortages, records fifoLossCost, and adjusts surpluses', () => {
-  let state = createInitialState();
+  let state = createDemoSeedState();
 
   // Add a second newer FIFO batch to sku-fcb-1 (had 10 @ $6.50 on 2026-11-01) -> add 5 @ $8.00 on 2026-11-20
   const order = createImportOrder(state, {
@@ -712,7 +762,7 @@ test('applyAuditAdjustments consumes oldest FIFO layer on shortages, records fif
 });
 
 test('sanitizeForFirebase removes undefined fields and normalizeAppState preserves empty arrays from RTDB', () => {
-  let state = createInitialState();
+  let state = createDemoSeedState();
   // Collect all initial receivables so receivables becomes []
   for (const rec of [...state.receivables]) {
     state = collectReceivable(state, rec.id, 'Efectivo ($)').state;
@@ -750,7 +800,7 @@ test('sanitizeForFirebase removes undefined fields and normalizeAppState preserv
 });
 
 test('collectReceivable supports partial abonos and updates linked SaleRecord.paymentStatus when settled', () => {
-  let state = createInitialState();
+  let state = createDemoSeedState();
 
   // Credit sale of $30.00 creates receivable linked by saleId
   const creditSale = registerMultiItemSale(state, {
@@ -777,7 +827,7 @@ test('collectReceivable supports partial abonos and updates linked SaleRecord.pa
   const abono1 = collectReceivable(state, linkedRec.id, 'Zelle', 10);
   assert.equal(abono1.ok, true);
   state = abono1.state;
-  assert.equal(state.cashOnHand, round2(120.19 + 10));
+  assert.equal(state.cashOnHand, round2(135.19 + 10));
   assert.equal(state.collectedReceivablesCount, 0);
   const recAfterAbono1 = state.receivables.find((r) => r.id === linkedRec.id);
   assert.ok(recAfterAbono1);
@@ -794,7 +844,7 @@ test('collectReceivable supports partial abonos and updates linked SaleRecord.pa
   const abono2 = collectReceivable(state, linkedRec.id, 'Efectivo ($)', 20);
   assert.equal(abono2.ok, true);
   state = abono2.state;
-  assert.equal(state.cashOnHand, round2(120.19 + 30));
+  assert.equal(state.cashOnHand, round2(135.19 + 30));
   assert.equal(state.collectedReceivablesCount, 1);
   assert.equal(
     state.receivables.find((r) => r.id === linkedRec.id),
@@ -832,22 +882,22 @@ test('registerCapitalInjection and reconcileCashOnHand update liquidity without 
   });
   assert.equal(injRes.ok, true);
   state = injRes.state;
-  assert.equal(state.cashOnHand, round2(120.19 + 100));
+  assert.equal(state.cashOnHand, round2(135.19 + 100));
   assert.equal(state.funds.growthReinvestment, 100);
   assert.equal(state.capitalInjections.length, 2);
   assert.equal(state.movements[0].type, 'capital_injection');
 
-  // Reconcile cash exact count ($225.00)
-  const sameCash = reconcileCashOnHand(state, { countedCash: 220.19 });
+  // Reconcile cash exact count ($240.00)
+  const sameCash = reconcileCashOnHand(state, { countedCash: 235.19 });
   assert.equal(sameCash.ok, false);
 
   const recRes = reconcileCashOnHand(state, {
-    countedCash: 225.0,
+    countedCash: 240.0,
     reason: 'Arqueo de cierre',
   });
   assert.equal(recRes.ok, true);
   state = recRes.state;
-  assert.equal(state.cashOnHand, 225.0);
+  assert.equal(state.cashOnHand, 240.0);
   assert.equal(state.movements[0].type, 'reconciliation');
   assert.equal(state.movements[0].amount, 4.81);
 
@@ -880,4 +930,325 @@ test('registerCapitalInjection and reconcileCashOnHand update liquidity without 
     1,
   );
 });
+
+test('extractTeamFromModel extracts canonical and custom team categories from model prefix', () => {
+  assert.equal(extractTeamFromModel('Barcelona Local 25/26'), 'Barcelona');
+  assert.equal(extractTeamFromModel('Real Madrid Tercera Carbón'), 'Real Madrid');
+  assert.equal(extractTeamFromModel('Manchester City Visitante'), 'Manchester City');
+  assert.equal(extractTeamFromModel('PSG Cuarta Edición'), 'PSG');
+  assert.equal(extractTeamFromModel('Selección Venezuela Vinotinto'), 'Selecciones');
+  assert.equal(extractTeamFromModel('Liverpool Local 25/26'), 'Liverpool');
+  assert.equal(extractTeamFromModel('Inter Miami Visitante'), 'Inter Miami');
+  assert.equal(extractTeamFromModel('   '), 'Otro');
+});
+
+test('getTransitAlertStatus flags >15d Aéreo and >80d Marítimo EN TRÁNSITO batches', () => {
+  let state = createInitialState();
+
+  const aereoRes = createImportOrder(state, {
+    entryDate: '2026-10-01',
+    referenceName: 'Aéreo Atrasado',
+    shippingType: 'Aéreo',
+    totalFreightCost: 5,
+    items: [
+      {
+        team: 'Liverpool',
+        model: 'Liverpool Local 25/26',
+        version: 'Fans',
+        size: 'XXL',
+        quantity: 2,
+        factoryUnitCost: 5.5,
+        salePrice: 28,
+      },
+    ],
+  });
+  assert.equal(aereoRes.ok, true);
+  state = aereoRes.state;
+  const aereoBatch = state.purchaseBatches[0];
+
+  assert.equal(getTransitAlertStatus(aereoBatch, '2026-10-16').isDelayed, false); // exact 15d
+  assert.equal(getTransitAlertStatus(aereoBatch, '2026-10-17').isDelayed, true); // 16d > 15d
+
+  const maritimoRes = createImportOrder(state, {
+    entryDate: '2026-08-01',
+    referenceName: 'Marítimo Atrasado',
+    shippingType: 'Marítimo',
+    totalFreightCost: 5,
+    items: [
+      {
+        team: 'Arsenal',
+        model: 'Arsenal Visitante',
+        version: 'Player',
+        size: 'M',
+        quantity: 2,
+        factoryUnitCost: 6.0,
+        salePrice: 32,
+      },
+    ],
+  });
+  assert.equal(maritimoRes.ok, true);
+  state = maritimoRes.state;
+  const maritimoBatch = state.purchaseBatches[0];
+
+  assert.equal(getTransitAlertStatus(maritimoBatch, '2026-10-20').isDelayed, false); // exact 80d
+  assert.equal(getTransitAlertStatus(maritimoBatch, '2026-10-21').isDelayed, true); // 81d > 80d
+
+  const alerts = getActiveOperationalAlerts(state, '2026-10-25');
+  assert.equal(alerts.filter((a) => a.kind === 'transit_delay').length, 2);
+});
+
+test('getInventorySizeMatrix sums S-XXL grouped by model+version, merges Fan/Fans, propagates salePrice, and flags < 5 low stock', () => {
+  let state = createDemoSeedState();
+
+  const order = createImportOrder(state, {
+    entryDate: '2026-11-10',
+    referenceName: 'Matriz XXL Test',
+    shippingType: 'Aéreo',
+    totalFreightCost: 4,
+    items: [
+      {
+        team: 'Liverpool',
+        model: 'Liverpool Local 25/26',
+        version: 'Fans',
+        size: 'S',
+        quantity: 1,
+        factoryUnitCost: 5.5,
+        salePrice: 28,
+      },
+      {
+        team: 'Liverpool',
+        model: 'Liverpool Local 25/26',
+        version: 'Fans',
+        size: 'M',
+        quantity: 2,
+        factoryUnitCost: 5.5,
+        salePrice: 28,
+      },
+      {
+        team: 'Liverpool',
+        model: 'Liverpool Local 25/26',
+        version: 'Fans',
+        size: 'XXL',
+        quantity: 1,
+        factoryUnitCost: 5.5,
+        salePrice: 28,
+      },
+    ],
+  });
+  assert.equal(order.ok, true);
+  state = receiveImportBatch(order.state, {
+    batchId: order.state.purchaseBatches[0].id,
+    receivedDate: '2026-11-15',
+    actualFreightCost: 4,
+    receivedItems: [
+      { itemIndex: 0, receivedQuantity: 1 },
+      { itemIndex: 1, receivedQuantity: 2 },
+      { itemIndex: 2, receivedQuantity: 1 },
+    ],
+  }).state;
+
+  const matrix = getInventorySizeMatrix(state.inventory, 5);
+  const livRow = matrix.find(
+    (r) => r.model === 'Liverpool Local 25/26' && r.version === 'Fans',
+  );
+  assert.ok(livRow);
+  assert.equal(livRow.sizes.S, 1);
+  assert.equal(livRow.sizes.M, 2);
+  assert.equal(livRow.sizes.L, 0);
+  assert.equal(livRow.sizes.XL, 0);
+  assert.equal(livRow.sizes.XXL, 1);
+  assert.equal(livRow.totalStock, 4);
+  assert.equal(livRow.salePrice, 28);
+  assert.equal(livRow.isLowStock, true); // 4 < 5
+
+  // Verify existing Barcelona Local 25/26 Fans merged cleanly (12 uds -> NOT low stock)
+  const fcbFans = matrix.find(
+    (r) => r.model === 'Barcelona Local 25/26' && r.version === 'Fans',
+  );
+  assert.ok(fcbFans);
+  assert.equal(fcbFans.totalStock, 12);
+  assert.equal(fcbFans.isLowStock, false);
+
+  const alerts = getActiveOperationalAlerts(state, '2026-10-25');
+  assert.ok(
+    alerts.some(
+      (a) =>
+        a.kind === 'low_stock' && a.title.includes('Liverpool Local 25/26'),
+    ),
+  );
+});
+
+test('migrateLegacyInventoryItems & migrateLegacyStateToCurrent adapt old structures to S-XXL & Fans/Player/Retro without data loss', () => {
+  const legacyPayload = JSON.stringify({
+    efectivo: 135.19,
+    inventario: [
+      {
+        id: 'old-1',
+        modelo: 'Liverpool Local 25/26',
+        version: 'Fan',
+        tallas: { S: 2, M: 3, '2XL': 1 },
+        costo: 5.75,
+        precioVenta: 26,
+      },
+      {
+        id: 'old-2',
+        model: 'Bayern Munich Retro 02',
+        version: 'Retro',
+        size: 'xl',
+        stock: 4,
+        cogs: 7.1,
+      },
+    ],
+  });
+
+  const migrated = migrateLegacyStateToCurrent(legacyPayload);
+  assert.ok(migrated);
+  assert.equal(migrated.cashOnHand, 135.19);
+  assert.equal(getTotalUnits(migrated), 10); // 2 + 3 + 1 + 4 = 10 preserved
+  assert.equal(migrated.receivables.length, 7);
+  assert.equal(getTotalReceivables(migrated), 263.5);
+
+  const livXxl = migrated.inventory.find(
+    (i) => i.model === 'Liverpool Local 25/26' && i.size === 'XXL',
+  );
+  assert.ok(livXxl);
+  assert.equal(livXxl.team, 'Liverpool');
+  assert.equal(livXxl.version, 'Fans');
+  assert.equal(livXxl.stock, 1);
+  assert.equal(livXxl.salePrice, 26);
+
+  const matrix = getInventorySizeMatrix(migrated.inventory, 5);
+  const livRow = matrix.find((r) => r.model === 'Liverpool Local 25/26');
+  assert.equal(livRow?.sizes.S, 2);
+  assert.equal(livRow?.sizes.M, 3);
+  assert.equal(livRow?.sizes.XXL, 1);
+  assert.equal(livRow?.totalStock, 6);
+  assert.equal(livRow?.isLowStock, false);
+});
+
+test('recoverStartupErpState strips accidental demo items, preserves real localStorage data, and keeps $135.19 cash + 7 receivables ($263.50)', () => {
+  const emptyRemote = normalizeAppState({
+    cashOnHand: 120.19,
+    inventory: [],
+    receivables: [],
+    exchangeRates: { bcv: 46.5, usdt: 54.2, updatedAt: '2026-11-16T00:00:00.000Z', source: 'api' },
+    funds: {
+      replacement: 0,
+      commissions: 0,
+      commissionsBySeller: { Jesús: 0, Josué: 0, Gabriel: 0 },
+      operatingAndAds: 0,
+      growthReinvestment: 0,
+      dividendsByPartner: { Jesús: 0, Josué: 0, Gabriel: 0 },
+      reinvestedFromDividendsTotal: 0,
+    },
+  });
+
+  // Case 1: Recover from genuine non-demo localStorage backup (ignoring any accidental demo backup)
+  const accidentalDemoBackup = JSON.stringify({
+    ...createDemoSeedState(),
+    isExplicitDemo: false,
+  });
+  const realLocalBackup = JSON.stringify({
+    cashOnHand: 135.19,
+    inventory: [
+      { id: 'loc-1', model: 'Arsenal Local', version: 'Fan', size: 'L', stock: 5, cogs: 6.0 },
+    ],
+  });
+  const fromLocal = recoverStartupErpState(emptyRemote, [
+    accidentalDemoBackup,
+    realLocalBackup,
+  ]);
+  assert.equal(fromLocal.needsFirebaseSync, true);
+  assert.equal(fromLocal.state.cashOnHand, 135.19);
+  assert.equal(getTotalUnits(fromLocal.state), 5);
+  assert.equal(fromLocal.state.inventory[0].version, 'Fans');
+
+  // Case 2: Accidental demo seed sitting in Firebase RTDB (without isExplicitDemo) -> stripped to 0 fake items + $135.19 cash + $263.50 CxC
+  const accidentalRemote = {
+    ...createDemoSeedState(),
+    isExplicitDemo: false,
+    cashOnHand: 120.19,
+    receivables: [],
+  };
+  assert.equal(isAccidentalDemoCatalogOnly(accidentalRemote), true);
+  const cleanedRemote = recoverStartupErpState(accidentalRemote, [accidentalDemoBackup]);
+  assert.equal(cleanedRemote.needsFirebaseSync, true);
+  assert.equal(cleanedRemote.state.inventory.length, 0);
+  assert.equal(cleanedRemote.state.cashOnHand, 135.19);
+  assert.equal(getTotalReceivables(cleanedRemote.state), 263.5);
+  assert.equal(cleanedRemote.state.receivables.length, 7);
+  assert.equal(cleanedRemote.state.historicalNetProfit, 317.37);
+
+  // Case 3: Already clean remote baseline -> needsFirebaseSync is false (no pointless rewrites on refresh)
+  const cleanRemote = createInitialState();
+  const steady = recoverStartupErpState(cleanRemote, []);
+  assert.equal(steady.needsFirebaseSync, false);
+  assert.equal(steady.state.inventory.length, 0);
+  assert.equal(steady.state.cashOnHand, 135.19);
+  assert.equal(steady.state.receivables.length, 7);
+
+  // Also test direct migrateLegacyInventoryItems preserves 0-loss on mixed entries
+  const migratedItems = migrateLegacyInventoryItems([
+    { model: 'Bayern Munich Local', version: 'Fan', size: '2XL', stock: 3, cogs: 5.9 },
+  ]);
+  assert.equal(migratedItems[0].size, 'XXL');
+  assert.equal(migratedItems[0].version, 'Fans');
+  assert.equal(migratedItems[0].team, 'Bayern Munich');
+});
+
+test('processReturnOrExchange handles upgrades (+diff), even swaps (0 diff), and refunds (-diff) with FIFO stock & cash reconciliation', () => {
+  let state = createDemoSeedState();
+  // Register initial cash sale of sku-fcb-3 (Fans M @ $25.00) -> FAC-0001
+  const saleRes = registerMultiItemSale(state, {
+    items: [{ skuId: 'sku-fcb-3', quantity: 1, unitPrice: 25 }],
+    customerName: 'Cliente Cambio',
+    seller: 'Jesús',
+    paymentStatus: 'Cobrado',
+  });
+  assert.equal(saleRes.ok, true);
+  state = saleRes.state;
+  const sale = state.sales[0];
+  const cashAfterSale = state.cashOnHand; // 135.19 + 25 = 160.19
+  const fansBefore = state.inventory.find((i) => i.id === 'sku-fcb-3')!.stock; // 11
+  const playerBefore = state.inventory.find((i) => i.id === 'sku-fcb-1')!.stock; // 10
+
+  // 1. Exchange Fans ($25) for Player ($30) -> client pays +$5.00 difference
+  const upgradeRes = processReturnOrExchange(state, {
+    type: 'Cambio',
+    saleId: sale.id,
+    invoiceNumber: sale.invoiceNumber,
+    returnedSkuId: 'sku-fcb-3',
+    returnedQuantity: 1,
+    returnedUnitPrice: 25,
+    replacementSkuId: 'sku-fcb-1',
+    replacementQuantity: 1,
+    replacementUnitPrice: 30,
+    paymentMethod: 'Efectivo ($)',
+    reason: 'Upgrade a versión Player',
+  });
+  assert.equal(upgradeRes.ok, true);
+  state = upgradeRes.state;
+  assert.equal(state.cashOnHand, round2(cashAfterSale + 5)); // 165.19
+  assert.equal(state.inventory.find((i) => i.id === 'sku-fcb-3')?.stock, fansBefore + 1);
+  assert.equal(state.inventory.find((i) => i.id === 'sku-fcb-1')?.stock, playerBefore - 1);
+  assert.equal(state.returns?.[0].differenceUsd, 5);
+
+  // 2. Full return / refund of sku-fcb-1 ($30) -> cash decreases by $30 & funds reconcile proportionally to physical cash
+  const refundRes = processReturnOrExchange(state, {
+    type: 'Devolución',
+    returnedSkuId: 'sku-fcb-1',
+    returnedQuantity: 1,
+    returnedUnitPrice: 30,
+    paymentMethod: 'Efectivo ($)',
+    reason: 'Talla incorrecta',
+  });
+  assert.equal(refundRes.ok, true);
+  state = refundRes.state;
+  assert.equal(state.cashOnHand, round2(cashAfterSale + 5 - 30)); // 135.19
+  assert.equal(state.inventory.find((i) => i.id === 'sku-fcb-1')?.stock, playerBefore);
+  assert.equal(state.returns?.[0].differenceUsd, -30);
+  assert.equal(getCashBackedFundsSummary(state).isStrictlyCashBacked, true);
+});
+
+
 

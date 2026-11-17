@@ -1,22 +1,20 @@
 export type TabId =
   | 'dashboard'
   | 'ventas'
+  | 'devoluciones'
   | 'inventario'
   | 'auditoria'
   | 'compras'
   | 'finanzas'
-  | 'estadisticas';
+  | 'estadisticas'
+  | 'reportes'
+  | 'cargas'
+  | 'historial-precios';
 
-export type TeamCategory =
-  | 'Barcelona'
-  | 'Real Madrid'
-  | 'Manchester City'
-  | 'PSG'
-  | 'Selecciones'
-  | 'Otro';
+export type TeamCategory = string;
 
-export type JerseyVersion = 'Player' | 'Fan' | 'Retro';
-export type JerseySize = 'S' | 'M' | 'L' | 'XL';
+export type JerseyVersion = 'Player' | 'Fan' | 'Fans' | 'Retro';
+export type JerseySize = 'S' | 'M' | 'L' | 'XL' | 'XXL';
 
 export type SellerName = 'Jesús' | 'Josué' | 'Gabriel' | 'Sin Vendedor';
 export type PartnerName = 'Jesús' | 'Josué' | 'Gabriel';
@@ -118,6 +116,7 @@ export interface SaleLineItem {
 
 export interface SaleRecord {
   id: string;
+  invoiceNumber?: string; // Consecutivo ordenado: FAC-0001, FAC-0002, ...
   skuId: string;
   modelLabel: string;
   team: TeamCategory;
@@ -128,6 +127,8 @@ export interface SaleRecord {
   finalPrice: number;
   items?: SaleLineItem[];
   customerName: string;
+  customerCity?: string;
+  customerPhone?: string;
   seller: SellerName;
   paymentStatus: PaymentStatus;
   paymentMethod: PaymentMethod;
@@ -135,6 +136,34 @@ export interface SaleRecord {
   bcvEquivalent?: number;
   debtorName?: string;
   breakdown: FourLayerBreakdown;
+  createdAt: string;
+}
+
+export type ReturnExchangeType = 'Cambio' | 'Devolución';
+
+export interface ReturnExchangeRecord {
+  id: string;
+  type: ReturnExchangeType;
+  saleId?: string;
+  invoiceNumber?: string;
+  returnedSkuId: string;
+  returnedModelLabel: string;
+  returnedVersion: JerseyVersion;
+  returnedSize: JerseySize;
+  returnedQuantity: number;
+  returnedUnitPrice: number;
+  returnedTotal: number;
+  replacementSkuId?: string;
+  replacementModelLabel?: string;
+  replacementVersion?: JerseyVersion;
+  replacementSize?: JerseySize;
+  replacementQuantity?: number;
+  replacementUnitPrice?: number;
+  replacementTotal?: number;
+  differenceUsd: number; // >0 cliente paga diferencia, <0 se reembolsa al cliente, 0 parejo
+  paymentMethod: SinglePaymentMethod;
+  reason: string;
+  customerName?: string;
   createdAt: string;
 }
 
@@ -202,12 +231,19 @@ export interface ExchangeRates {
   source?: 'api' | 'manual' | 'excel' | 'seed';
 }
 
+export type ExpenseCategory =
+  | 'Gastos de Comercialización/Publicidad'
+  | 'Gastos de Logística/Empaque (bolsas, etiquetas)'
+  | 'Gastos Personales / Retiros de Socios';
+
 export interface OperatingExpenseRecord {
   id: string;
   concept: string;
+  category?: ExpenseCategory;
   amount: number;
   source: 'operatingFund' | 'cashOnHand';
   paymentMethod: SinglePaymentMethod;
+  deficitCoveredByFunds?: number;
   createdAt: string;
 }
 
@@ -261,7 +297,8 @@ export interface AuditMovement {
     | 'expense'
     | 'adjustment'
     | 'capital_injection'
-    | 'reconciliation';
+    | 'reconciliation'
+    | 'return_exchange';
   description: string;
   amount: number;
   createdAt: string;
@@ -274,12 +311,16 @@ export interface AppState {
   receivables: ReceivableItem[];
   collectedReceivablesCount: number;
   sales: SaleRecord[];
+  nextInvoiceSeq?: number;
+  returns?: ReturnExchangeRecord[];
   purchases: PurchaseRecord[];
   purchaseBatches: PurchaseBatchRecord[];
   operatingExpenses: OperatingExpenseRecord[];
   capitalInjections: CapitalInjectionRecord[];
   inventoryAdjustments: InventoryAdjustmentRecord[];
   historicalNetProfit?: number;
+  userPurgedEmpty?: boolean;
+  isExplicitDemo?: boolean;
   funds: FinancialFunds;
   movements: AuditMovement[];
 }

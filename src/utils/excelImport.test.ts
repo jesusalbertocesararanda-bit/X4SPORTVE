@@ -102,7 +102,7 @@ test('buildErpStateFromSheets initializes fixed itemized USDT balances when Fina
 
   assert.equal(result.ok, true);
   assert.ok(result.state);
-  assert.equal(result.state.cashOnHand, 120.19);
+  assert.equal(result.state.cashOnHand, 135.19);
   assert.equal(getTotalReceivables(result.state), 263.5);
   assert.equal(result.state.receivables.length, 7);
   assert.equal(result.state.capitalInjections[0].amount, 1912.35);

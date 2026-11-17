@@ -13,6 +13,7 @@ import { PARTNER_SHARES } from '../data/initialState';
 import type {
   AppState,
   CapitalInjectionDestination,
+  ExpenseCategory,
   PartnerName,
   PaymentMethod,
   SinglePaymentMethod,
@@ -23,9 +24,11 @@ import type {
   RegisterOperatingExpenseInput,
 } from '../utils/finance';
 import {
+  EXPENSE_CATEGORIES,
   formatUSD,
   formatUSDT,
   formatVES,
+  getCashBackedFundsSummary,
   getTotalReceivables,
   round2,
 } from '../utils/finance';
@@ -72,9 +75,12 @@ export function FinanceView({
   const [abonoAmountInput, setAbonoAmountInput] = useState('');
 
   const [expenseConcept, setExpenseConcept] = useState('');
+  const [expenseCategory, setExpenseCategory] = useState<ExpenseCategory>(
+    EXPENSE_CATEGORIES[0],
+  );
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseSource, setExpenseSource] = useState<'operatingFund' | 'cashOnHand'>(
-    'cashOnHand',
+    'operatingFund',
   );
   const [expenseMethod, setExpenseMethod] =
     useState<SinglePaymentMethod>('Efectivo ($)');
@@ -104,6 +110,7 @@ export function FinanceView({
   const [downloadingHtml, setDownloadingHtml] = useState(false);
 
   const totalReceivables = getTotalReceivables(state);
+  const cashBackedSummary = getCashBackedFundsSummary(state);
 
   const handleDownloadStandaloneHtml = async () => {
     setFeedback(null);
@@ -201,6 +208,7 @@ export function FinanceView({
     const parsedAmount = Number(expenseAmount);
     const res = onRegisterOperatingExpense({
       concept: expenseConcept,
+      category: expenseCategory,
       amount: parsedAmount,
       source: expenseSource,
       paymentMethod: expenseMethod,
@@ -212,11 +220,16 @@ export function FinanceView({
       });
       return;
     }
+    const triggeredDeficit =
+      expenseSource === 'operatingFund' &&
+      parsedAmount > state.funds.operatingAndAds;
     setExpenseConcept('');
     setExpenseAmount('');
     setFeedback({
       type: 'success',
-      text: `Gasto operativo "${expenseConcept.trim()}" por ${formatUSD(parsedAmount)} registrado y descontado de caja.`,
+      text: triggeredDeficit
+        ? `Gasto [${expenseCategory}] "${expenseConcept.trim()}" por ${formatUSD(parsedAmount)} registrado. Regla de Déficit aplicada: el excedente redujo proporcionalmente el resto de los fondos activos.`
+        : `Gasto [${expenseCategory}] "${expenseConcept.trim()}" por ${formatUSD(parsedAmount)} registrado y descontado de caja.`,
     });
   };
 
@@ -309,7 +322,7 @@ export function FinanceView({
                   setConfirmReset(false);
                   setFeedback({
                     type: 'success',
-                    text: 'Datos iniciales X4SPORT ($120.19 caja, $263.50 CxC, 176 uds) restablecidos.',
+                    text: 'Saldos oficiales X4SPORT ($135.19 caja, $263.50 CxC, sin ítems de prueba) restablecidos.',
                   });
                 }}
                 className="min-h-[40px] rounded-lg bg-red-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-red-500"
@@ -346,12 +359,25 @@ export function FinanceView({
 
       <section aria-labelledby="funds-heading">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <h2
-            id="funds-heading"
-            className="font-display text-lg font-semibold text-white"
-          >
-            Fondos Acumulados · Matriz de 4 Capas (USDT)
-          </h2>
+          <div>
+            <h2
+              id="funds-heading"
+              className="font-display text-lg font-semibold text-white"
+            >
+              Fondos Acumulados · Matriz de 4 Capas (USDT)
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-400">
+              Cálculo estricto respaldado por efectivo físico real en caja (
+              <span className="font-mono-num text-slate-200">
+                {formatUSDT(cashBackedSummary.totalAllocatedFunds)}
+              </span>{' '}
+              en fondos vs{' '}
+              <span className="font-mono-num text-emerald-300">
+                {formatUSDT(cashBackedSummary.cashOnHand)}
+              </span>{' '}
+              en caja).
+            </p>
+          </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400">
             <span>
               Ganancia neta histórica:{' '}
@@ -715,7 +741,33 @@ export function FinanceView({
           onSubmit={handleExpenseSubmit}
           className="grid grid-cols-1 gap-4 sm:grid-cols-12 sm:items-end"
         >
-          <div className="sm:col-span-4">
+          <div className="sm:col-span-3">
+            <label
+              htmlFor="expense-category"
+              className="block text-xs font-medium text-slate-300"
+            >
+              Clasificación del gasto *
+            </label>
+            <select
+              id="expense-category"
+              data-testid="expense-category"
+              required
+              value={expenseCategory}
+              onChange={(e) => {
+                setExpenseCategory(e.target.value as ExpenseCategory);
+                setFeedback(null);
+              }}
+              className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-xs text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {EXPENSE_CATEGORIES.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="sm:col-span-3">
             <label
               htmlFor="expense-concept"
               className="block text-xs font-medium text-slate-300"
@@ -774,10 +826,10 @@ export function FinanceView({
                   e.target.value as 'operatingFund' | 'cashOnHand',
                 )
               }
-              className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-xs text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
-              <option value="cashOnHand">Caja General</option>
               <option value="operatingFund">Fondo Operativo 10%</option>
+              <option value="cashOnHand">Caja General</option>
             </select>
           </div>
 
@@ -794,7 +846,7 @@ export function FinanceView({
               onChange={(e) =>
                 setExpenseMethod(e.target.value as SinglePaymentMethod)
               }
-              className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-xs text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               {PAYMENT_METHODS.map((pm) => (
                 <option key={pm} value={pm}>
@@ -804,16 +856,55 @@ export function FinanceView({
             </select>
           </div>
 
-          <div className="sm:col-span-2">
+          {expenseSource === 'operatingFund' &&
+            Number(expenseAmount) > state.funds.operatingAndAds &&
+            Number(expenseAmount) <= state.cashOnHand && (
+              <div className="sm:col-span-12 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-200">
+                Regla de Déficit activa: el Fondo Operativo (
+                {formatUSD(state.funds.operatingAndAds)}) no cubre todo el gasto;
+                el excedente de{' '}
+                <strong className="font-mono-num">
+                  {formatUSD(
+                    round2(Number(expenseAmount) - state.funds.operatingAndAds),
+                  )}
+                </strong>{' '}
+                se restará del efectivo en caja y reducirá proporcionalmente los fondos restantes.
+              </div>
+            )}
+
+          <div className="sm:col-span-12 flex justify-end">
             <button
               type="submit"
-              className="inline-flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-500 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+              data-testid="btn-register-expense"
+              className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-500 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
             >
               <Receipt className="h-4 w-4 shrink-0" aria-hidden="true" />
-              Registrar Gasto
+              Registrar Gasto Clasificado
             </button>
           </div>
         </form>
+
+        {/* Resumen por categoría obligatoria */}
+        <div className="grid grid-cols-1 gap-3 border-t border-slate-800 pt-4 sm:grid-cols-3">
+          {EXPENSE_CATEGORIES.map((cat) => {
+            const catTotal = round2(
+              (state.operatingExpenses ?? [])
+                .filter((e) => e.category === cat)
+                .reduce((s, e) => s + e.amount, 0),
+            );
+            return (
+              <div
+                key={cat}
+                className="rounded-lg border border-slate-800 bg-[#080E1C] px-3.5 py-2.5"
+              >
+                <p className="text-[11px] font-medium text-slate-400">{cat}</p>
+                <p className="font-mono-num mt-1 text-sm font-bold text-white">
+                  {formatUSDT(catTotal)}
+                </p>
+              </div>
+            );
+          })}
+        </div>
 
         {(state.operatingExpenses ?? []).length === 0 ? (
           <p className="text-xs text-slate-400">
@@ -827,12 +918,22 @@ export function FinanceView({
                 className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-xs"
               >
                 <div>
-                  <p className="font-medium text-white">{exp.concept}</p>
+                  <p className="font-medium text-white">
+                    {exp.concept}{' '}
+                    <span className="text-blue-300 font-normal">
+                      · {exp.category ?? 'Gasto histórico acumulado'}
+                    </span>
+                  </p>
                   <p className="text-slate-400">
                     {exp.paymentMethod} ·{' '}
                     {exp.source === 'operatingFund'
                       ? 'Fondo Operativo 10%'
-                      : 'Caja General'}{' '}
+                      : 'Caja General'}
+                    {exp.deficitCoveredByFunds && exp.deficitCoveredByFunds > 0
+                      ? ` · Déficit proporcional (-${formatUSD(
+                          exp.deficitCoveredByFunds,
+                        )})`
+                      : ''}{' '}
                     ·{' '}
                     {new Date(exp.createdAt).toLocaleString('es-VE', {
                       dateStyle: 'short',

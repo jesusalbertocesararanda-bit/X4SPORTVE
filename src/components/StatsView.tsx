@@ -59,16 +59,21 @@ export function StatsView({ state }: StatsViewProps) {
     const canvas = inventoryCanvasRef.current;
     if (!canvas) return;
 
-    const unitsByTeam = CHART_TEAMS.map((team) =>
-      state.inventory
-        .filter((item) => item.team === team)
-        .reduce((sum, item) => sum + item.stock, 0),
+    const dynamicTeams = Array.from(
+      new Set([
+        ...CHART_TEAMS,
+        ...state.inventory.map((i) => i.team).filter(Boolean),
+      ]),
     );
 
-    const activePairs = CHART_TEAMS.map((label, i) => ({
-      label,
-      value: unitsByTeam[i],
-    })).filter((p) => p.value > 0);
+    const activePairs = dynamicTeams
+      .map((label) => ({
+        label,
+        value: state.inventory
+          .filter((item) => item.team === label)
+          .reduce((sum, item) => sum + item.stock, 0),
+      }))
+      .filter((p) => p.value > 0);
 
     const chart = new Chart(canvas, {
       type: 'doughnut',

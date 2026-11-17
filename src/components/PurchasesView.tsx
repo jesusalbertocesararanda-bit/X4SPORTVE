@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   CheckCircle2,
   Clock,
   PackageCheck,
@@ -8,6 +9,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { getDefaultSalePrice } from '../data/initialState';
 import type {
   AppState,
   JerseySize,
@@ -22,7 +24,10 @@ import type {
   RegisterImportBatchInput,
 } from '../utils/finance';
 import {
+  ALL_JERSEY_SIZES,
+  extractTeamFromModel,
   formatUSD,
+  getTransitAlertStatus,
   getTransitCapitalSummary,
   round2,
   round4,
@@ -46,21 +51,21 @@ interface DraftBatchLine {
   size: JerseySize;
   quantity: number;
   factoryUnitCost: number;
+  salePrice: number;
 }
 
 type PurchasesSubView = 'all' | 'create' | 'transit' | 'history';
 
-const TEAMS: TeamCategory[] = [
-  'Barcelona',
-  'Real Madrid',
-  'Manchester City',
-  'PSG',
-  'Selecciones',
-  'Otro',
-];
-const VERSIONS: JerseyVersion[] = ['Player', 'Fan', 'Retro'];
-const SIZES: JerseySize[] = ['S', 'M', 'L', 'XL'];
+const VERSIONS: Array<'Fans' | 'Player' | 'Retro'> = ['Fans', 'Player', 'Retro'];
 const SHIPPING_TYPES: ShippingType[] = ['Aéreo', 'Marítimo'];
+
+const EMPTY_SIZE_MATRIX: Record<JerseySize, string> = {
+  S: '0',
+  M: '0',
+  L: '0',
+  XL: '0',
+  XXL: '0',
+};
 
 export function PurchasesView({
   state,
@@ -86,13 +91,16 @@ export function PurchasesView({
     setBatchUsdtRate(state.exchangeRates.usdt.toFixed(2));
   }, [state.exchangeRates.usdt]);
 
-  // Etapa 1: Batch item builder fields
-  const [team, setTeam] = useState<TeamCategory>('Barcelona');
-  const [model, setModel] = useState('Barcelona Local 25/26');
-  const [version, setVersion] = useState<JerseyVersion>('Player');
-  const [size, setSize] = useState<JerseySize>('M');
-  const [quantity, setQuantity] = useState('5');
+  // Etapa 1: Batch item builder fields (auto team extraction + Fans/Player/Retro + S..XXL matrix + salePrice)
+  const [model, setModel] = useState('');
+  const [version, setVersion] = useState<'Fans' | 'Player' | 'Retro'>('Fans');
   const [factoryUnitCost, setFactoryUnitCost] = useState('5.50');
+  const [unitSalePrice, setUnitSalePrice] = useState('25.00');
+  const [salePriceTouched, setSalePriceTouched] = useState(false);
+  const [sizeMatrix, setSizeMatrix] =
+    useState<Record<JerseySize, string>>(EMPTY_SIZE_MATRIX);
+
+  const detectedTeam = useMemo(() => extractTeamFromModel(model), [model]);
 
   const [draftItems, setDraftItems] = useState<DraftBatchLine[]>([]);
   const [feedback, setFeedback] = useState<{
@@ -155,6 +163,23 @@ export function PurchasesView({
       ? Math.min(state.cashOnHand, state.funds.growthReinvestment)
       : state.cashOnHand;
 
+  const matrixTotalUnits = useMemo(
+    () =>
+      ALL_JERSEY_SIZES.reduce((sum, sz) => {
+        const val = Math.max(0, Math.floor(Number(sizeMatrix[sz]) || 0));
+        return sum + val;
+      }, 0),
+    [sizeMatrix],
+  );
+
+  const handleVersionChange = (nextVer: 'Fans' | 'Player' | 'Retro') => {
+    setVersion(nextVer);
+    setFeedback(null);
+    if (!salePriceTouched) {
+      setUnitSalePrice(getDefaultSalePrice(nextVer, model).toFixed(2));
+    }
+  };
+
   const handleAddLine = (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback(null);
@@ -163,16 +188,7 @@ export function PurchasesView({
     if (!cleanModel) {
       setFeedback({
         type: 'error',
-        text: 'Ingresa el nombre del modelo para agregar a la orden.',
-      });
-      return;
-    }
-
-    const qty = Math.floor(Number(quantity) || 0);
-    if (!Number.isFinite(qty) || qty <= 0) {
-      setFeedback({
-        type: 'error',
-        text: 'La cantidad comprada debe ser mayor a 0.',
+        text: 'Ingresa el nombre del equipo/modelo para agregar a la orden.',
       });
       return;
     }
@@ -186,19 +202,44 @@ export function PurchasesView({
       return;
     }
 
-    setDraftItems((prev) => [
-      ...prev,
-      {
-        lineId: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        team,
-        model: cleanModel,
-        version,
-        size,
-        quantity: qty,
-        factoryUnitCost: fCost,
-      },
-    ]);
-    setQuantity('5');
+    const parsedSalePrice = round2(Number(unitSalePrice) || 0);
+    if (!Number.isFinite(parsedSalePrice) || parsedSalePrice <= 0) {
+      setFeedback({
+        type: 'error',
+        text: 'El precio de venta unitario ($) debe ser mayor a $0.00.',
+      });
+      return;
+    }
+
+    const sizesToAdd = ALL_JERSEY_SIZES.map((sz) => ({
+      size: sz,
+      qty: Math.max(0, Math.floor(Number(sizeMatrix[sz]) || 0)),
+    })).filter((entry) => entry.qty > 0);
+
+    if (sizesToAdd.length === 0) {
+      setFeedback({
+        type: 'error',
+        text: 'Ingresa al menos 1 unidad en la matriz de tallas (S, M, L, XL, XXL).',
+      });
+      return;
+    }
+
+    const resolvedTeam = extractTeamFromModel(cleanModel);
+    const stamp = Date.now();
+    const newLines: DraftBatchLine[] = sizesToAdd.map((entry, idx) => ({
+      lineId: `draft-${stamp}-${idx}-${entry.size}`,
+      team: resolvedTeam,
+      model: cleanModel,
+      version,
+      size: entry.size,
+      quantity: entry.qty,
+      factoryUnitCost: fCost,
+      salePrice: parsedSalePrice,
+    }));
+
+    setDraftItems((prev) => [...prev, ...newLines]);
+    setSizeMatrix(EMPTY_SIZE_MATRIX);
+    setSalePriceTouched(false);
   };
 
   const handleRemoveLine = (lineId: string) => {
@@ -233,6 +274,7 @@ export function PurchasesView({
         size: l.size,
         quantity: l.quantity,
         factoryUnitCost: l.factoryUnitCost,
+        salePrice: l.salePrice,
       })),
     });
 
@@ -538,7 +580,7 @@ export function PurchasesView({
                     htmlFor="batch-shipping"
                     className="block text-xs font-medium text-slate-300"
                   >
-                    Tipo de envío
+                    Tipo de envío (SLA)
                   </label>
                   <select
                     id="batch-shipping"
@@ -550,7 +592,9 @@ export function PurchasesView({
                   >
                     {SHIPPING_TYPES.map((st) => (
                       <option key={st} value={st}>
-                        {st}
+                        {st === 'Aéreo'
+                          ? 'Aéreo (Alerta > 15 días)'
+                          : 'Marítimo (Alerta > 80 días)'}
                       </option>
                     ))}
                   </select>
@@ -640,38 +684,26 @@ export function PurchasesView({
                 Agrega cada modelo con su precio puro de fábrica; al confirmar la llegada podrás ajustar flete y cantidades reales recibidas.
               </p>
 
-              <form onSubmit={handleAddLine} className="mt-4 space-y-4">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                  <div>
-                    <label
-                      htmlFor="purchase-team"
-                      className="block text-xs font-medium text-slate-300"
-                    >
-                      Equipo / Categoría
-                    </label>
-                    <select
-                      id="purchase-team"
-                      value={team}
-                      onChange={(e) => setTeam(e.target.value as TeamCategory)}
-                      className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    >
-                      {TEAMS.map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="sm:col-span-2">
-                    <label
-                      htmlFor="purchase-model"
-                      className="block text-xs font-medium text-slate-300"
-                    >
-                      Nombre del modelo
-                    </label>
+              <form onSubmit={handleAddLine} className="mt-4 space-y-5">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-12">
+                  <div className="sm:col-span-6">
+                    <div className="flex items-center justify-between gap-2">
+                      <label
+                        htmlFor="purchase-model"
+                        className="block text-xs font-medium text-slate-300"
+                      >
+                        Nombre del equipo / modelo
+                      </label>
+                      <span
+                        data-testid="purchase-detected-team"
+                        className="text-[11px] font-medium text-blue-300"
+                      >
+                        Categoría: <strong>{detectedTeam}</strong>
+                      </span>
+                    </div>
                     <input
                       id="purchase-model"
+                      data-testid="purchase-model-input"
                       type="text"
                       list="existing-models-list"
                       required
@@ -680,7 +712,7 @@ export function PurchasesView({
                         setModel(e.target.value);
                         setFeedback(null);
                       }}
-                      placeholder="Ej. Barcelona Local 25/26"
+                      placeholder="Ej. Real Madrid Local 25/26 o Liverpool Visitante"
                       className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                     <datalist id="existing-models-list">
@@ -689,10 +721,8 @@ export function PurchasesView({
                       ))}
                     </datalist>
                   </div>
-                </div>
 
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                  <div>
+                  <div className="sm:col-span-2">
                     <label
                       htmlFor="purchase-version"
                       className="block text-xs font-medium text-slate-300"
@@ -701,9 +731,12 @@ export function PurchasesView({
                     </label>
                     <select
                       id="purchase-version"
+                      data-testid="purchase-version-select"
                       value={version}
                       onChange={(e) =>
-                        setVersion(e.target.value as JerseyVersion)
+                        handleVersionChange(
+                          e.target.value as 'Fans' | 'Player' | 'Retro',
+                        )
                       }
                       className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     >
@@ -715,58 +748,16 @@ export function PurchasesView({
                     </select>
                   </div>
 
-                  <div>
-                    <label
-                      htmlFor="purchase-size"
-                      className="block text-xs font-medium text-slate-300"
-                    >
-                      Talla
-                    </label>
-                    <select
-                      id="purchase-size"
-                      value={size}
-                      onChange={(e) => setSize(e.target.value as JerseySize)}
-                      className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    >
-                      {SIZES.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label
-                      htmlFor="purchase-qty"
-                      className="block text-xs font-medium text-slate-300"
-                    >
-                      Cantidad
-                    </label>
-                    <input
-                      id="purchase-qty"
-                      type="number"
-                      min="1"
-                      step="1"
-                      required
-                      value={quantity}
-                      onChange={(e) => {
-                        setQuantity(e.target.value);
-                        setFeedback(null);
-                      }}
-                      className="font-mono-num mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                  </div>
-
-                  <div>
+                  <div className="sm:col-span-2">
                     <label
                       htmlFor="purchase-factory-cost"
                       className="block text-xs font-medium text-slate-300"
                     >
-                      Precio Fábrica (USDT/ud)
+                      Costo Fábrica ($)
                     </label>
                     <input
                       id="purchase-factory-cost"
+                      data-testid="purchase-factory-cost-input"
                       type="number"
                       min="0.01"
                       step="0.01"
@@ -779,15 +770,81 @@ export function PurchasesView({
                       className="font-mono-num mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
+
+                  <div className="sm:col-span-2">
+                    <label
+                      htmlFor="purchase-sale-price"
+                      className="block text-xs font-medium text-slate-300"
+                    >
+                      Precio Venta ($)
+                    </label>
+                    <input
+                      id="purchase-sale-price"
+                      data-testid="purchase-sale-price-input"
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      required
+                      value={unitSalePrice}
+                      onChange={(e) => {
+                        setUnitSalePrice(e.target.value);
+                        setSalePriceTouched(true);
+                        setFeedback(null);
+                      }}
+                      className="font-mono-num mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-emerald-300 font-semibold focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Matriz de tallas rápida en columnas S, M, L, XL, XXL */}
+                <div className="rounded-xl border border-slate-800 bg-[#080E1C] p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-200">
+                      Matriz Rápida de Tallas (cantidades por talla)
+                    </span>
+                    <span className="font-mono-num text-xs font-semibold text-blue-300">
+                      Total a agregar: {matrixTotalUnits} uds
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                    {ALL_JERSEY_SIZES.map((sz) => (
+                      <div key={sz}>
+                        <label
+                          htmlFor={`matrix-size-${sz}`}
+                          className="block text-center text-xs font-bold text-slate-300"
+                        >
+                          Talla {sz}
+                        </label>
+                        <input
+                          id={`matrix-size-${sz}`}
+                          data-testid={`purchase-size-${sz}`}
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={sizeMatrix[sz]}
+                          onChange={(e) => {
+                            setSizeMatrix((prev) => ({
+                              ...prev,
+                              [sz]: e.target.value,
+                            }));
+                            setFeedback(null);
+                          }}
+                          className="font-mono-num mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-center text-sm font-semibold text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="flex justify-end">
                   <button
                     type="submit"
+                    data-testid="btn-add-batch-items"
                     className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-blue-500/40 bg-blue-600/20 px-4 py-2 text-sm font-semibold text-blue-200 transition-colors hover:bg-blue-600/30 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                   >
                     <Plus className="h-4 w-4" aria-hidden="true" />
-                    Agregar Ítem al Lote
+                    Agregar Tallas al Lote
                   </button>
                 </div>
               </form>
@@ -812,6 +869,7 @@ export function PurchasesView({
                           <th className="pb-2 text-right">Cant.</th>
                           <th className="pb-2 text-right">Fábrica</th>
                           <th className="pb-2 text-right">Est. Puesto</th>
+                          <th className="pb-2 text-right">PVP ($)</th>
                           <th className="pb-2 text-right">Acción</th>
                         </tr>
                       </thead>
@@ -830,7 +888,7 @@ export function PurchasesView({
                                   {line.model}
                                 </span>
                                 <span className="block text-xs text-slate-400">
-                                  {line.version} · Talla {line.size}
+                                  {line.team} · {line.version} · Talla {line.size}
                                 </span>
                               </td>
                               <td className="py-2.5 text-right font-mono-num font-semibold text-white">
@@ -841,6 +899,9 @@ export function PurchasesView({
                               </td>
                               <td className="py-2.5 text-right font-mono-num font-semibold text-blue-300">
                                 {formatUSD(landed)}
+                              </td>
+                              <td className="py-2.5 text-right font-mono-num font-semibold text-emerald-300">
+                                {formatUSD(line.salePrice)}
                               </td>
                               <td className="py-2.5 pl-2 text-right">
                                 <button
@@ -1006,71 +1067,92 @@ export function PurchasesView({
             </div>
           ) : (
             <div className="mt-5 divide-y divide-slate-800">
-              {transitBatches.map((batch) => (
-                <article
-                  key={batch.id}
-                  data-testid={`transit-batch-${batch.id}`}
-                  className="py-5 first:pt-1 last:pb-1 space-y-4"
-                >
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div className="space-y-1">
-                      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-300">
-                          <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-                          {batch.status}
-                        </span>
-                        <span aria-hidden="true" className="text-slate-600">
-                          ·
-                        </span>
-                        <span className="font-mono-num text-xs text-slate-400">
-                          Orden {batch.entryDate}
-                        </span>
-                        <span aria-hidden="true" className="text-slate-600">
-                          ·
-                        </span>
-                        <span className="text-xs text-blue-300">
-                          {batch.shippingType}
-                        </span>
-                        <span aria-hidden="true" className="text-slate-600">
-                          ·
-                        </span>
-                        <span className="text-xs text-slate-400">
-                          Pago:{' '}
-                          {batch.fundingSource === 'growthReinvestment'
-                            ? 'Fondo Reinversión'
-                            : 'Caja General'}
-                        </span>
+              {transitBatches.map((batch) => {
+                const transitAlert = getTransitAlertStatus(batch);
+                return (
+                  <article
+                    key={batch.id}
+                    data-testid={`transit-batch-${batch.id}`}
+                    className={`py-5 first:pt-1 last:pb-1 space-y-4 ${
+                      transitAlert.isDelayed
+                        ? 'rounded-xl border border-red-500/40 bg-red-500/5 px-4 my-2'
+                        : ''
+                    }`}
+                  >
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                          <span
+                            className={`inline-flex items-center gap-1 text-xs font-semibold ${
+                              transitAlert.isDelayed
+                                ? 'text-red-400'
+                                : 'text-amber-300'
+                            }`}
+                          >
+                            {transitAlert.isDelayed ? (
+                              <AlertTriangle
+                                className="h-3.5 w-3.5"
+                                aria-hidden="true"
+                              />
+                            ) : (
+                              <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                            )}
+                            {transitAlert.isDelayed
+                              ? `RETRASO EN TRÁNSITO (${transitAlert.daysInTransit}d > ${transitAlert.thresholdDays}d)`
+                              : `${batch.status} (${transitAlert.daysInTransit}d)`}
+                          </span>
+                          <span aria-hidden="true" className="text-slate-600">
+                            ·
+                          </span>
+                          <span className="font-mono-num text-xs text-slate-400">
+                            Orden {batch.entryDate}
+                          </span>
+                          <span aria-hidden="true" className="text-slate-600">
+                            ·
+                          </span>
+                          <span className="text-xs text-blue-300">
+                            {batch.shippingType}
+                          </span>
+                          <span aria-hidden="true" className="text-slate-600">
+                            ·
+                          </span>
+                          <span className="text-xs text-slate-400">
+                            Pago:{' '}
+                            {batch.fundingSource === 'growthReinvestment'
+                              ? 'Fondo Reinversión'
+                              : 'Caja General'}
+                          </span>
+                        </div>
+
+                        <h3 className="text-base font-semibold text-white">
+                          {batch.referenceName}
+                        </h3>
+
+                        <p className="text-xs text-slate-400">
+                          {batch.orderedTotalUnits} prendas en camino · Fábrica{' '}
+                          <span className="font-mono-num text-slate-200">
+                            {formatUSD(batch.totalFactoryCost)}
+                          </span>{' '}
+                          + Flete est.{' '}
+                          <span className="font-mono-num text-slate-200">
+                            {formatUSD(batch.estimatedFreightCost)}
+                          </span>{' '}
+                          · Total invertido:{' '}
+                          <strong className="font-mono-num text-amber-300">
+                            {formatUSD(batch.totalLandedCost)}
+                          </strong>
+                        </p>
                       </div>
 
-                      <h3 className="text-base font-semibold text-white">
-                        {batch.referenceName}
-                      </h3>
-
-                      <p className="text-xs text-slate-400">
-                        {batch.orderedTotalUnits} prendas en camino · Fábrica{' '}
-                        <span className="font-mono-num text-slate-200">
-                          {formatUSD(batch.totalFactoryCost)}
-                        </span>{' '}
-                        + Flete est.{' '}
-                        <span className="font-mono-num text-slate-200">
-                          {formatUSD(batch.estimatedFreightCost)}
-                        </span>{' '}
-                        · Total invertido:{' '}
-                        <strong className="font-mono-num text-amber-300">
-                          {formatUSD(batch.totalLandedCost)}
-                        </strong>
-                      </p>
+                      <button
+                        type="button"
+                        onClick={() => openReceiveModal(batch)}
+                        className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-500 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                      >
+                        <PackageCheck className="h-4 w-4" aria-hidden="true" />
+                        Recibir / Validar Lote
+                      </button>
                     </div>
-
-                    <button
-                      type="button"
-                      onClick={() => openReceiveModal(batch)}
-                      className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-500 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
-                    >
-                      <PackageCheck className="h-4 w-4" aria-hidden="true" />
-                      Recibir / Validar Lote
-                    </button>
-                  </div>
 
                   <div className="overflow-x-auto rounded-lg border border-slate-800/80 bg-[#080E1C] px-4 py-2.5">
                     <ul className="divide-y divide-slate-800/60 text-xs">
@@ -1099,7 +1181,8 @@ export function PurchasesView({
                     </ul>
                   </div>
                 </article>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>

@@ -1,25 +1,39 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Loader2 } from 'lucide-react';
+import { AppHeader } from './components/AppHeader';
 import { AuditView } from './components/AuditView';
+import { BulkImportView } from './components/BulkImportView';
 import { DashboardView } from './components/DashboardView';
 import { ExcelImportModal } from './components/ExcelImportModal';
 import { FinanceView } from './components/FinanceView';
 import { InventoryView } from './components/InventoryView';
 import { PurchasesView } from './components/PurchasesView';
+import { ReportsView } from './components/ReportsView';
+import { ReturnsView } from './components/ReturnsView';
 import { SalesView } from './components/SalesView';
+import { SettingsModal } from './components/SettingsModal';
+import { Sidebar } from './components/Sidebar';
 import { StatsView } from './components/StatsView';
-import { TopNav } from './components/TopNav';
+import { SupplierPriceHistoryView } from './components/SupplierPriceHistoryView';
 import { createInitialState } from './data/initialState';
-import type { AppState, PartnerName, PaymentMethod, TabId } from './types/erp';
+import type {
+  AppState,
+  PartnerName,
+  PaymentMethod,
+  SaleRecord,
+  TabId,
+} from './types/erp';
 import { fetchVenezuelaExchangeRates } from './utils/exchangeRatesApi';
 import {
   adjustInventoryPhysicalCount,
   applyAuditAdjustments,
   collectReceivable,
   createImportOrder,
-  getLowStockItems,
+  getActiveOperationalAlerts,
+  processReturnOrExchange,
   receiveImportBatch,
   reconcileCashOnHand,
+  recoverStartupErpState,
   registerCapitalInjection,
   registerMultiItemSale,
   registerOperatingExpense,
@@ -31,6 +45,7 @@ import type {
   ActionResult,
   AdjustInventoryCountInput,
   ApplyAuditAdjustmentsInput,
+  ProcessReturnExchangeInput,
   ReceiveImportBatchInput,
   ReconcileCashInput,
   RegisterCapitalInjectionInput,
@@ -41,8 +56,10 @@ import type {
 import {
   formatFirebaseError,
   purgeAllDataInFirebase,
-  purgeLegacyLocalStorage,
+  readLocalStorageRecoveryCandidates,
+  resetBaselineStateInFirebase,
   resetErpStateInFirebase,
+  saveLocalStateBackup,
   subscribeErpState,
   writeErpState,
   writeExchangeRatesOnly,
@@ -53,17 +70,39 @@ export interface RateSyncInfo {
   message?: string;
 }
 
+const MODULE_TITLES: Record<TabId, string> = {
+  dashboard: 'Panel Principal',
+  ventas: 'Ventas y Facturación Digital',
+  devoluciones: 'Devoluciones y Cambios',
+  compras: 'Compras y Recepción de Mercancía',
+  inventario: 'Inventario y Stock Base',
+  auditoria: 'Auditoría Física de Inventario',
+  finanzas: 'Finanzas, Caja y Cuentas por Cobrar',
+  estadisticas: 'Estadísticas y Comisiones',
+  reportes: 'Reportes Consolidados Avanzados',
+  cargas: 'Cargas Masivas de Datos (.xlsx)',
+  'historial-precios': 'Historial de Precios y Proveedores',
+};
+
 export default function App() {
-  const [state, setState] = useState<AppState>(() => createInitialState());
+  const [state, setState] = useState<AppState>(() => {
+    const { state: initialRecovered } = recoverStartupErpState(
+      createInitialState(),
+      readLocalStorageRecoveryCandidates(),
+    );
+    return initialRecovered;
+  });
   const [isHydratingDb, setIsHydratingDb] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>('dashboard');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [rateSync, setRateSync] = useState<RateSyncInfo>({ status: 'idle' });
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
 
-  // Limpiar cualquier dato fantasma en localStorage y suscribir en tiempo real (onValue) a Firebase RTDB
+  // Suscripción en tiempo real (onValue) a Firebase RTDB con blindaje anti-borrado de localStorage
   useEffect(() => {
-    purgeLegacyLocalStorage();
     const unsubscribe = subscribeErpState(
       (remoteState) => {
         setState(remoteState);
@@ -82,12 +121,15 @@ export default function App() {
   }, []);
 
   const commitState = useCallback(
-    (res: ActionResult): { ok: boolean; error?: string } => {
+    (
+      res: ActionResult,
+    ): { ok: boolean; error?: string; createdSale?: SaleRecord } => {
       if (!res.ok) {
         return { ok: false, error: res.error };
       }
 
       setState(res.state);
+      saveLocalStateBackup(res.state, { allowOverwriteEmpty: true });
       void writeErpState(res.state)
         .then(() => {
           setDbError(null);
@@ -96,7 +138,7 @@ export default function App() {
           setDbError(formatFirebaseError(err));
         });
 
-      return { ok: true };
+      return { ok: true, createdSale: res.createdSale };
     },
     [],
   );
@@ -215,13 +257,16 @@ export default function App() {
     };
   }, [isHydratingDb]);
 
-  const lowStockCount = getLowStockItems(state, 2).length;
-  const pendingReceivablesCount = state.receivables.length;
+  const activeAlerts = useMemo(
+    () => getActiveOperationalAlerts(state),
+    [state],
+  );
 
   const handleUpdateRates = (bcv: number, usdt: number) => {
     const res = updateExchangeRates(state, bcv, usdt, 'manual');
     if (res.ok) {
       setState(res.state);
+      saveLocalStateBackup(res.state, { allowOverwriteEmpty: true });
       void writeExchangeRatesOnly(res.state.exchangeRates)
         .then(() => setDbError(null))
         .catch((err: unknown) => setDbError(formatFirebaseError(err)));
@@ -271,6 +316,20 @@ export default function App() {
   const handleApplyAuditAdjustments = (input: ApplyAuditAdjustmentsInput) =>
     commitState(applyAuditAdjustments(state, input));
 
+  const handleProcessReturnOrExchange = (input: ProcessReturnExchangeInput) =>
+    commitState(processReturnOrExchange(state, input));
+
+  const handleResetBaselineData = () => {
+    void resetBaselineStateInFirebase()
+      .then((fresh) => {
+        setState(fresh);
+        setDbError(null);
+      })
+      .catch((err: unknown) => {
+        setDbError(formatFirebaseError(err));
+      });
+  };
+
   const handleResetDemoData = () => {
     void resetErpStateInFirebase()
       .then((fresh) => {
@@ -283,9 +342,14 @@ export default function App() {
   };
 
   const handleApplyImportedState = async (nextState: AppState) => {
-    purgeLegacyLocalStorage();
-    setState(nextState);
-    await writeErpState(nextState);
+    const cleanNext: AppState = {
+      ...nextState,
+      userPurgedEmpty: false,
+      isExplicitDemo: false,
+    };
+    saveLocalStateBackup(cleanNext, { allowOverwriteEmpty: true });
+    setState(cleanNext);
+    await writeErpState(cleanNext);
     setDbError(null);
   };
 
@@ -300,93 +364,133 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#060B16] text-slate-100 flex flex-col">
-      <TopNav
+    <div className="min-h-screen bg-[#060B16] text-slate-100 flex">
+      <Sidebar
         activeTab={activeTab}
+        isCollapsed={sidebarCollapsed}
+        mobileOpen={mobileSidebarOpen}
+        onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
+        onCloseMobile={() => setMobileSidebarOpen(false)}
         onSelectTab={setActiveTab}
-        onOpenExcelImport={() => setIsExcelModalOpen(true)}
-        lowStockCount={lowStockCount}
-        pendingReceivablesCount={pendingReceivablesCount}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
-        {dbError && (
-          <div
-            role="alert"
-            className="mb-6 flex items-start gap-2.5 rounded-xl border border-red-500/35 bg-red-500/10 px-4 py-3 text-xs font-medium text-red-200"
-          >
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" aria-hidden="true" />
-            <span>{dbError}</span>
-          </div>
-        )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <AppHeader
+          moduleTitle={MODULE_TITLES[activeTab]}
+          alerts={activeAlerts}
+          onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
+          onStartSale={() => setActiveTab('ventas')}
+          onNavigateTab={setActiveTab}
+        />
 
-        {isHydratingDb ? (
-          <div
-            className="flex min-h-[320px] flex-col items-center justify-center gap-3 rounded-xl border border-slate-800 bg-[#0D1526] p-8 text-center"
-            role="status"
-          >
-            <Loader2 className="h-7 w-7 animate-spin text-blue-400" aria-hidden="true" />
-            <p className="text-sm font-medium text-slate-200">
-              Cargando datos sincronizados de X4SPORT...
-            </p>
-          </div>
-        ) : (
-          <>
-            {activeTab === 'dashboard' && (
-              <DashboardView
-                state={state}
-                rateSync={rateSync}
-                onSyncRatesFromApi={syncRatesFromApi}
-                onUpdateRates={handleUpdateRates}
-                onNavigate={setActiveTab}
-              />
-            )}
+        <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
+          {dbError && (
+            <div
+              role="alert"
+              className="mb-6 flex items-start gap-2.5 rounded-xl border border-red-500/35 bg-red-500/10 px-4 py-3 text-xs font-medium text-red-200"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" aria-hidden="true" />
+              <span>{dbError}</span>
+            </div>
+          )}
 
-            {activeTab === 'ventas' && (
-              <SalesView
-                state={state}
-                onRegisterMultiSale={handleRegisterMultiSale}
-              />
-            )}
+          {isHydratingDb ? (
+            <div
+              className="flex min-h-[320px] flex-col items-center justify-center gap-3 rounded-xl border border-slate-800 bg-[#0D1526] p-8 text-center"
+              role="status"
+            >
+              <Loader2 className="h-7 w-7 animate-spin text-blue-400" aria-hidden="true" />
+              <p className="text-sm font-medium text-slate-200">
+                Cargando datos sincronizados de X4SPORT...
+              </p>
+            </div>
+          ) : (
+            <>
+              {activeTab === 'dashboard' && (
+                <DashboardView
+                  state={state}
+                  rateSync={rateSync}
+                  onSyncRatesFromApi={syncRatesFromApi}
+                  onUpdateRates={handleUpdateRates}
+                  onNavigate={setActiveTab}
+                />
+              )}
 
-            {activeTab === 'inventario' && (
-              <InventoryView
-                state={state}
-                onAdjustInventoryCount={handleAdjustInventoryCount}
-              />
-            )}
+              {activeTab === 'ventas' && (
+                <SalesView
+                  state={state}
+                  onRegisterMultiSale={handleRegisterMultiSale}
+                />
+              )}
 
-            {activeTab === 'auditoria' && (
-              <AuditView
-                state={state}
-                onApplyAuditAdjustments={handleApplyAuditAdjustments}
-              />
-            )}
+              {activeTab === 'devoluciones' && (
+                <ReturnsView
+                  state={state}
+                  onProcessReturnOrExchange={handleProcessReturnOrExchange}
+                />
+              )}
 
-            {activeTab === 'compras' && (
-              <PurchasesView
-                state={state}
-                onRegisterImportBatch={handleRegisterImportBatch}
-                onReceiveImportBatch={handleReceiveImportBatch}
-              />
-            )}
+              {activeTab === 'inventario' && (
+                <InventoryView
+                  state={state}
+                  onAdjustInventoryCount={handleAdjustInventoryCount}
+                />
+              )}
 
-            {activeTab === 'finanzas' && (
-              <FinanceView
-                state={state}
-                onCollectReceivable={handleCollectReceivable}
-                onReinvestDividends={handleReinvestDividends}
-                onRegisterOperatingExpense={handleRegisterOperatingExpense}
-                onRegisterCapitalInjection={handleRegisterCapitalInjection}
-                onReconcileCash={handleReconcileCash}
-                onResetDemoData={handleResetDemoData}
-              />
-            )}
+              {activeTab === 'auditoria' && (
+                <AuditView
+                  state={state}
+                  onApplyAuditAdjustments={handleApplyAuditAdjustments}
+                />
+              )}
 
-            {activeTab === 'estadisticas' && <StatsView state={state} />}
-          </>
-        )}
-      </main>
+              {activeTab === 'compras' && (
+                <PurchasesView
+                  state={state}
+                  onRegisterImportBatch={handleRegisterImportBatch}
+                  onReceiveImportBatch={handleReceiveImportBatch}
+                />
+              )}
+
+              {activeTab === 'finanzas' && (
+                <FinanceView
+                  state={state}
+                  onCollectReceivable={handleCollectReceivable}
+                  onReinvestDividends={handleReinvestDividends}
+                  onRegisterOperatingExpense={handleRegisterOperatingExpense}
+                  onRegisterCapitalInjection={handleRegisterCapitalInjection}
+                  onReconcileCash={handleReconcileCash}
+                  onResetDemoData={handleResetBaselineData}
+                />
+              )}
+
+              {activeTab === 'estadisticas' && <StatsView state={state} />}
+              {activeTab === 'reportes' && <ReportsView state={state} />}
+              {activeTab === 'cargas' && (
+                <BulkImportView
+                  state={state}
+                  onApplyImportedState={handleApplyImportedState}
+                />
+              )}
+              {activeTab === 'historial-precios' && (
+                <SupplierPriceHistoryView state={state} />
+              )}
+            </>
+          )}
+        </main>
+      </div>
+
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        state={state}
+        rateSync={rateSync}
+        onClose={() => setIsSettingsOpen(false)}
+        onOpenExcelImport={() => setIsExcelModalOpen(true)}
+        onSyncRatesFromApi={syncRatesFromApi}
+        onUpdateRates={handleUpdateRates}
+        onResetDemoData={handleResetDemoData}
+      />
 
       <ExcelImportModal
         isOpen={isExcelModalOpen}
