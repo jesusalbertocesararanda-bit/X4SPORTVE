@@ -1,14 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Calendar,
   CheckCircle2,
   Download,
+  ExternalLink,
   FileImage,
+  History,
   Percent,
   Plus,
   Search,
   ShoppingBag,
+  Star,
   Tag,
   Trash2,
+  UserCheck,
+  UserPlus,
   X,
 } from 'lucide-react';
 import type {
@@ -22,7 +28,11 @@ import type {
   SellerName,
   SinglePaymentMethod,
 } from '../types/erp';
-import type { PricingAdjustMode, RegisterMultiSaleInput } from '../utils/finance';
+import type {
+  PricingAdjustMode,
+  RegisterMultiSaleInput,
+  UpsertCustomerInput,
+} from '../utils/finance';
 import {
   calculateDiscountedUnitPrice,
   calculateFourLayerMatrixConsolidated,
@@ -34,15 +44,41 @@ import {
   WHOLESALE_DISCOUNT_PCT,
 } from '../utils/finance';
 import {
+  buildCustomerDirectory,
+  evaluateCustomerStatus,
+  normalizeCustomerText,
+  searchCustomerDirectory,
+  type CustomerHistorySummary,
+} from '../utils/customers';
+import {
+  buildSaleCalendarEvent,
+  createGoogleCalendarEvent,
+  shouldScheduleSaleCalendarEvent,
+  type GoogleCalendarAuthState,
+} from '../utils/googleCalendar';
+import {
   downloadJpgDataUrl,
   renderSaleReceiptJpgDataUrl,
 } from '../utils/receiptJpg';
+import { GoogleCalendarBanner } from './GoogleCalendarBanner';
 
 interface SalesViewProps {
   state: AppState;
+  calendarAuth?: GoogleCalendarAuthState;
+  onConnectGoogleCalendar?: () => Promise<boolean>;
+  onDisconnectGoogleCalendar?: () => Promise<void>;
+  onCalendarAuthExpired?: () => void;
+  onAttachSaleCalendarMetadata?: (
+    saleId: string,
+    eventId: string,
+    htmlLink?: string,
+  ) => void;
   onRegisterMultiSale: (
     input: RegisterMultiSaleInput,
   ) => { ok: boolean; error?: string; createdSale?: SaleRecord };
+  onSaveCustomerProfile?: (
+    input: UpsertCustomerInput,
+  ) => { ok: boolean; error?: string };
 }
 
 interface CartLine {
@@ -77,7 +113,16 @@ const INITIAL_MIXED_SPLITS: Record<SinglePaymentMethod, string> = {
   'Pago Móvil / Bs': '',
 };
 
-export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
+export function SalesView({
+  state,
+  calendarAuth,
+  onConnectGoogleCalendar,
+  onDisconnectGoogleCalendar,
+  onCalendarAuthExpired,
+  onAttachSaleCalendarMetadata,
+  onRegisterMultiSale,
+  onSaveCustomerProfile,
+}: SalesViewProps) {
   const [cart, setCart] = useState<CartLine[]>([]);
   const [modelSearch, setModelSearch] = useState<string>('');
   const [selectedSkuId, setSelectedSkuId] = useState<string>('');
@@ -87,20 +132,34 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
   const [discountType, setDiscountType] = useState<'pct' | 'usd'>('usd');
   const [discountAmountInput, setDiscountAmountInput] = useState<string>('');
 
-  // Optional flexible customer fields
+  // Optional flexible customer fields + dynamic autocomplete & profile state
   const [customerName, setCustomerName] = useState<string>('');
   const [customerCity, setCustomerCity] = useState<string>('');
   const [customerPhone, setCustomerPhone] = useState<string>('');
+  const [customerSocial, setCustomerSocial] = useState<string>('');
+  const [customerIdDoc, setCustomerIdDoc] = useState<string>('');
+  const [customerDropdownOpen, setCustomerDropdownOpen] =
+    useState<boolean>(false);
+  const [customerSavedNotice, setCustomerSavedNotice] = useState<string | null>(
+    null,
+  );
+  const customerBoxRef = useRef<HTMLDivElement | null>(null);
 
   const [seller, setSeller] = useState<SellerName>('Jesús');
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('Cobrado');
+  const [deliveryDate, setDeliveryDate] = useState<string>('');
   const [paymentMethod, setPaymentMethod] =
     useState<PaymentMethod>('Efectivo ($)');
   const [mixedSplits, setMixedSplits] =
     useState<Record<SinglePaymentMethod, string>>(INITIAL_MIXED_SPLITS);
+  const [pendingCalendarSale, setPendingCalendarSale] =
+    useState<SaleRecord | null>(null);
   const [feedback, setFeedback] = useState<{
     type: 'success' | 'error';
     text: string;
+    calendarNotice?: string;
+    calendarLink?: string;
+    needsCalendarAuth?: boolean;
   } | null>(null);
 
   // Invoice search & auto-generated JPG receipt state
@@ -163,6 +222,84 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
     setPricingMode('normal');
     setDiscountAmountInput('');
   }, [activeSku?.id, activeSku?.salePrice]);
+
+  useEffect(() => {
+    if (!customerDropdownOpen) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (
+        customerBoxRef.current &&
+        !customerBoxRef.current.contains(e.target as Node)
+      ) {
+        setCustomerDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, [customerDropdownOpen]);
+
+  const customerDirectory = useMemo(
+    () => buildCustomerDirectory(state.sales, state.customers ?? []),
+    [state.customers, state.sales],
+  );
+
+  const customerSuggestions = useMemo(() => {
+    const query = customerName.trim() || customerPhone.trim();
+    return searchCustomerDirectory(customerDirectory, query, 7);
+  }, [customerDirectory, customerName, customerPhone]);
+
+  const customerStatus = useMemo(
+    () =>
+      evaluateCustomerStatus(
+        customerDirectory,
+        customerName,
+        customerPhone,
+      ),
+    [customerDirectory, customerName, customerPhone],
+  );
+
+  const handleSelectCustomerSuggestion = (customer: CustomerHistorySummary) => {
+    setCustomerName(customer.name);
+    setCustomerPhone(customer.phone ?? '');
+    setCustomerCity(customer.city ?? '');
+    setCustomerSocial(customer.social ?? '');
+    setCustomerIdDoc(customer.idDoc ?? '');
+    setCustomerDropdownOpen(false);
+    setCustomerSavedNotice(null);
+    setFeedback(null);
+  };
+
+  const handleClearCustomerFields = () => {
+    setCustomerName('');
+    setCustomerPhone('');
+    setCustomerCity('');
+    setCustomerSocial('');
+    setCustomerIdDoc('');
+    setCustomerSavedNotice(null);
+    setCustomerDropdownOpen(false);
+  };
+
+  const handleSaveNewCustomerInline = () => {
+    if (!onSaveCustomerProfile) return;
+    const res = onSaveCustomerProfile({
+      name: customerName,
+      phone: customerPhone,
+      city: customerCity,
+      social: customerSocial,
+      idDoc: customerIdDoc,
+    });
+    if (!res.ok) {
+      setFeedback({
+        type: 'error',
+        text: res.error ?? 'No se pudo guardar la ficha del cliente.',
+      });
+      return;
+    }
+    setCustomerDropdownOpen(false);
+    setCustomerSavedNotice(
+      `Ficha de ${customerName.trim()} guardada en el directorio sin salir de la venta.`,
+    );
+    setFeedback(null);
+  };
 
   // Simulate exact sequential FIFO consumption across all lines in the cart
   const cartFifoSimulation = useMemo(() => {
@@ -423,8 +560,62 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
     }
   };
 
+  const scheduleSaleInCalendar = async (sale: SaleRecord) => {
+    const calRes = await createGoogleCalendarEvent(buildSaleCalendarEvent(sale));
+    if (calRes.ok) {
+      setPendingCalendarSale(null);
+      if (calRes.eventId) {
+        onAttachSaleCalendarMetadata?.(
+          sale.id,
+          calRes.eventId,
+          calRes.htmlLink,
+        );
+      }
+      setFeedback((prev) =>
+        prev
+          ? {
+              ...prev,
+              calendarNotice: `Recordatorio agendado en Google Calendar para ${sale.customerName}.`,
+              calendarLink: calRes.htmlLink,
+              needsCalendarAuth: false,
+            }
+          : {
+              type: 'success',
+              text: `Recordatorio de ${sale.invoiceNumber || 'venta'} agendado en Google Calendar.`,
+              calendarNotice: `Recordatorio agendado para ${sale.customerName}.`,
+              calendarLink: calRes.htmlLink,
+              needsCalendarAuth: false,
+            },
+      );
+    } else if (calRes.needsAuth) {
+      setPendingCalendarSale(sale);
+      onCalendarAuthExpired?.();
+      setFeedback((prev) =>
+        prev
+          ? {
+              ...prev,
+              calendarNotice:
+                'Conecta Google Calendar para agendar automáticamente este recordatorio.',
+              needsCalendarAuth: true,
+            }
+          : null,
+      );
+    } else {
+      setFeedback((prev) =>
+        prev
+          ? {
+              ...prev,
+              calendarNotice: `No se pudo agendar en Google Calendar: ${calRes.error ?? 'error desconocido'}`,
+              needsCalendarAuth: false,
+            }
+          : null,
+      );
+    }
+  };
+
   const handleConfirmTotalSale = () => {
     setFeedback(null);
+    setPendingCalendarSale(null);
 
     if (cart.length === 0) {
       setFeedback({
@@ -447,6 +638,9 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
     const cleanCustomer = customerName.trim() || 'Cliente Mostrador';
     const cleanCity = customerCity.trim() || undefined;
     const cleanPhone = customerPhone.trim() || undefined;
+    const cleanSocial = customerSocial.trim() || undefined;
+    const cleanIdDoc = customerIdDoc.trim() || undefined;
+    const cleanDeliveryDate = deliveryDate.trim() || undefined;
 
     const res = onRegisterMultiSale({
       items: cart.map((line) => ({
@@ -459,11 +653,14 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
       customerName: cleanCustomer,
       customerCity: cleanCity,
       customerPhone: cleanPhone,
+      customerSocial: cleanSocial,
+      customerIdDoc: cleanIdDoc,
       seller,
       paymentStatus,
       paymentMethod,
       paymentSplits: paymentSplitsPayload,
       debtorName: cleanCustomer,
+      deliveryDate: cleanDeliveryDate,
     });
 
     if (!res.ok) {
@@ -479,20 +676,42 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
     setCustomerName('');
     setCustomerCity('');
     setCustomerPhone('');
+    setCustomerSocial('');
+    setCustomerIdDoc('');
+    setDeliveryDate('');
+    setCustomerSavedNotice(null);
+    setCustomerDropdownOpen(false);
     setMixedSplits(INITIAL_MIXED_SPLITS);
 
     const invoiceTag = res.createdSale?.invoiceNumber
       ? `Factura ${res.createdSale.invoiceNumber} · `
       : '';
+    const willSchedule =
+      res.createdSale && shouldScheduleSaleCalendarEvent(res.createdSale);
+
     setFeedback({
       type: 'success',
       text: `${invoiceTag}Venta registrada para ${cleanCustomer} (${summaryCount} ${
         summaryCount === 1 ? 'franela' : 'franelas'
       } · ${formatUSD(summaryTotal)} vía ${paymentMethod}). Comprobante JPG generado.`,
+      ...(willSchedule
+        ? { calendarNotice: 'Agendando recordatorio en Google Calendar...' }
+        : {}),
     });
 
     if (res.createdSale) {
       void openOrDownloadSaleReceipt(res.createdSale, true);
+      if (shouldScheduleSaleCalendarEvent(res.createdSale)) {
+        void scheduleSaleInCalendar(res.createdSale);
+      }
+    }
+  };
+
+  const handleRetryPendingCalendarSale = async () => {
+    if (!pendingCalendarSale || !onConnectGoogleCalendar) return;
+    const connected = await onConnectGoogleCalendar();
+    if (connected) {
+      await scheduleSaleInCalendar(pendingCalendarSale);
     }
   };
 
@@ -545,6 +764,16 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
           Selecciona modelos en tarjetas limpias, aplica descuentos o Pago Mixto, emite facturas consecutivas JPG y consulta el historial.
         </p>
       </div>
+
+      {calendarAuth && onConnectGoogleCalendar && onDisconnectGoogleCalendar && (
+        <GoogleCalendarBanner
+          variant="compact"
+          authState={calendarAuth}
+          onConnect={onConnectGoogleCalendar}
+          onDisconnect={onDisconnectGoogleCalendar}
+          contextText="Las ventas pendientes o con fecha de entrega se agendan como recordatorio automático con cliente y modelo."
+        />
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         <div className="space-y-6 lg:col-span-7">
@@ -991,60 +1220,369 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
             </p>
 
             <div className="mt-4 space-y-4">
-              <div>
-                <label
-                  htmlFor="sale-customer-name"
-                  className="block text-xs font-medium text-slate-300"
-                >
-                  Nombre del Cliente (opcional)
-                </label>
-                <input
-                  id="sale-customer-name"
-                  type="text"
-                  placeholder="Opcional · Por defecto: Cliente Mostrador"
-                  value={customerName}
-                  onChange={(e) => {
-                    setCustomerName(e.target.value);
-                    setFeedback(null);
-                  }}
-                  className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div>
+              {/* Buscador/Autocompletado de Clientes + Indicador Dinámico Nuevo/Frecuente */}
+              <div
+                ref={customerBoxRef}
+                className="space-y-3 rounded-xl border border-slate-800 bg-[#080E1C] p-3.5"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <label
-                    htmlFor="sale-customer-city"
-                    className="block text-xs font-medium text-slate-300"
+                    htmlFor="sale-customer-name"
+                    className="text-xs font-semibold text-slate-200"
                   >
-                    Ciudad (opcional)
+                    Cliente (búsqueda por nombre o teléfono)
                   </label>
+
+                  {customerStatus.status === 'frequent' ? (
+                    <span
+                      data-testid="customer-status-badge"
+                      data-status="frequent"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/45 bg-amber-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-amber-200"
+                    >
+                      <Star
+                        className="h-3.5 w-3.5 fill-amber-400 text-amber-400 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span>
+                        Cliente Frecuente ({customerStatus.purchaseCount}{' '}
+                        {customerStatus.purchaseCount === 1
+                          ? 'compra'
+                          : 'compras'}
+                        )
+                      </span>
+                    </span>
+                  ) : customerStatus.status === 'new' &&
+                    customerDropdownOpen &&
+                    customerSuggestions.length > 0 &&
+                    !(
+                      customerSuggestions.length === 1 &&
+                      normalizeCustomerText(customerSuggestions[0].name) ===
+                        normalizeCustomerText(customerName)
+                    ) ? (
+                    <span
+                      data-testid="customer-status-badge"
+                      data-status="searching"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-blue-500/40 bg-blue-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-blue-200"
+                    >
+                      <Search className="h-3 w-3 shrink-0" aria-hidden="true" />
+                      <span>
+                        {customerSuggestions.length}{' '}
+                        {customerSuggestions.length === 1
+                          ? 'coincidencia'
+                          : 'coincidencias'}
+                      </span>
+                    </span>
+                  ) : customerStatus.status === 'new' ? (
+                    <span
+                      data-testid="customer-status-badge"
+                      data-status="new"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/45 bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-300"
+                    >
+                      <span
+                        className="h-2 w-2 rounded-full bg-emerald-400 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span>Cliente Nuevo</span>
+                    </span>
+                  ) : (
+                    <span
+                      data-testid="customer-status-badge"
+                      data-status="anonymous"
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/70 px-2.5 py-0.5 text-[11px] font-medium text-slate-400"
+                    >
+                      Cliente Mostrador
+                    </span>
+                  )}
+                </div>
+
+                <div className="relative">
+                  <Search
+                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                    aria-hidden="true"
+                  />
                   <input
-                    id="sale-customer-city"
+                    id="sale-customer-name"
+                    data-testid="sale-customer-name"
                     type="text"
-                    placeholder="Ej. Guacara / Valencia"
-                    value={customerCity}
-                    onChange={(e) => setCustomerCity(e.target.value)}
-                    className="mt-1.5 w-full min-h-[42px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    autoComplete="off"
+                    role="combobox"
+                    aria-expanded={
+                      customerDropdownOpen && customerSuggestions.length > 0
+                    }
+                    aria-controls="customer-autocomplete-listbox"
+                    placeholder="Escribe nombre o teléfono para buscar o registrar..."
+                    value={customerName}
+                    onFocus={() => setCustomerDropdownOpen(true)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        setCustomerDropdownOpen(false);
+                      }
+                    }}
+                    onChange={(e) => {
+                      setCustomerName(e.target.value);
+                      setCustomerDropdownOpen(true);
+                      setCustomerSavedNotice(null);
+                      setFeedback(null);
+                    }}
+                    className="w-full min-h-[42px] rounded-lg border border-slate-700 bg-[#070D19] pl-9 pr-9 py-2 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
+                  {(customerName ||
+                    customerPhone ||
+                    customerCity ||
+                    customerSocial ||
+                    customerIdDoc) && (
+                    <button
+                      type="button"
+                      onClick={handleClearCustomerFields}
+                      aria-label="Limpiar datos del cliente"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                    >
+                      <X className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  )}
+
+                  {customerDropdownOpen && customerSuggestions.length > 0 && (
+                    <ul
+                      id="customer-autocomplete-listbox"
+                      role="listbox"
+                      aria-label="Clientes sugeridos del historial"
+                      data-testid="customer-autocomplete-list"
+                      className="absolute left-0 right-0 top-[46px] z-40 max-h-56 divide-y divide-slate-800/80 overflow-y-auto rounded-xl border border-slate-700 bg-[#0D1526] shadow-2xl"
+                    >
+                      {customerSuggestions.map((cust) => (
+                        <li key={cust.key}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={false}
+                            data-testid={`customer-option-${cust.key}`}
+                            onClick={() => handleSelectCustomerSuggestion(cust)}
+                            className="flex w-full items-start justify-between gap-2 px-3 py-2.5 text-left transition-colors hover:bg-blue-600/15"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-semibold text-white">
+                                {cust.name}
+                              </p>
+                              <p className="mt-0.5 truncate text-[11px] text-slate-400">
+                                {[cust.phone, cust.city, cust.social]
+                                  .filter(Boolean)
+                                  .join(' · ') || 'Sin datos de contacto'}
+                              </p>
+                            </div>
+                            <div className="shrink-0 text-right">
+                              {cust.purchaseCount > 0 ? (
+                                <>
+                                  <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">
+                                    <Star
+                                      className="h-2.5 w-2.5 fill-amber-400 text-amber-400"
+                                      aria-hidden="true"
+                                    />
+                                    {cust.purchaseCount}{' '}
+                                    {cust.purchaseCount === 1
+                                      ? 'compra'
+                                      : 'compras'}
+                                  </span>
+                                  <span className="font-mono-num mt-0.5 block text-[10px] text-slate-300">
+                                    {formatUSD(cust.totalSpentUsd)}
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
+                                  Ficha nueva
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
 
-                <div>
-                  <label
-                    htmlFor="sale-customer-phone"
-                    className="block text-xs font-medium text-slate-300"
-                  >
-                    Teléfono (opcional)
-                  </label>
-                  <input
-                    id="sale-customer-phone"
-                    type="tel"
-                    placeholder="Ej. 0414-1234567"
-                    value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                    className="font-mono-num mt-1.5 w-full min-h-[42px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
+                {/* Tarjeta contextual para Cliente Frecuente */}
+                {customerStatus.status === 'frequent' &&
+                  customerStatus.matchedCustomer && (
+                    <div
+                      data-testid="customer-history-card"
+                      className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-amber-100">
+                        <span className="inline-flex items-center gap-1.5 font-semibold">
+                          <History
+                            className="h-3.5 w-3.5 text-amber-300"
+                            aria-hidden="true"
+                          />
+                          Historial de {customerStatus.matchedCustomer.name}
+                        </span>
+                        <span className="font-mono-num font-bold text-amber-300">
+                          Total previo:{' '}
+                          {formatUSD(customerStatus.totalSpentUsd)} (
+                          {customerStatus.purchaseCount}{' '}
+                          {customerStatus.purchaseCount === 1
+                            ? 'compra'
+                            : 'compras'}
+                          )
+                        </span>
+                      </div>
+                      {customerStatus.matchedCustomer.lastPurchaseSummary && (
+                        <p className="mt-1 text-[11px] text-amber-200/90">
+                          Última compra:{' '}
+                          {customerStatus.matchedCustomer.lastPurchaseDate
+                            ? new Date(
+                                customerStatus.matchedCustomer.lastPurchaseDate,
+                              ).toLocaleDateString('es-VE', {
+                                dateStyle: 'medium',
+                              })
+                            : ''}{' '}
+                          · {customerStatus.matchedCustomer.lastPurchaseInvoice}{' '}
+                          ({customerStatus.matchedCustomer.lastPurchaseSummary}{' '}
+                          ·{' '}
+                          <span className="font-mono-num font-semibold">
+                            {formatUSD(
+                              customerStatus.matchedCustomer
+                                .lastPurchaseAmountUsd ?? 0,
+                            )}
+                          </span>
+                          )
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                {/* Sugerencia rápida si encontró por teléfono aunque el nombre sea diferente o vacío */}
+                {customerStatus.status === 'frequent' &&
+                  customerStatus.matchedCustomer &&
+                  customerName.trim().toLowerCase() !==
+                    customerStatus.matchedCustomer.name.toLowerCase() && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleSelectCustomerSuggestion(
+                          customerStatus.matchedCustomer!,
+                        )
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-500/15 px-2.5 py-1.5 text-[11px] font-semibold text-blue-200 hover:bg-blue-500/25"
+                    >
+                      <UserCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                      Autocompletar ficha de {customerStatus.matchedCustomer.name}
+                    </button>
+                  )}
+
+                {/* Datos básicos del cliente (editable para frecuentes y registro directo para nuevos) */}
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  <div>
+                    <label
+                      htmlFor="sale-customer-phone"
+                      className="block text-[11px] font-medium text-slate-300"
+                    >
+                      Teléfono / WhatsApp
+                    </label>
+                    <input
+                      id="sale-customer-phone"
+                      data-testid="sale-customer-phone"
+                      type="tel"
+                      placeholder="Ej. 0414-1234567"
+                      value={customerPhone}
+                      onChange={(e) => {
+                        setCustomerPhone(e.target.value);
+                        setCustomerSavedNotice(null);
+                      }}
+                      className="font-mono-num mt-1 w-full min-h-[38px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="sale-customer-city"
+                      className="block text-[11px] font-medium text-slate-300"
+                    >
+                      Ciudad
+                    </label>
+                    <input
+                      id="sale-customer-city"
+                      data-testid="sale-customer-city"
+                      type="text"
+                      placeholder="Ej. Guacara / Valencia"
+                      value={customerCity}
+                      onChange={(e) => {
+                        setCustomerCity(e.target.value);
+                        setCustomerSavedNotice(null);
+                      }}
+                      className="mt-1 w-full min-h-[38px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="sale-customer-social"
+                      className="block text-[11px] font-medium text-slate-300"
+                    >
+                      Red Social (IG / TikTok)
+                    </label>
+                    <input
+                      id="sale-customer-social"
+                      data-testid="sale-customer-social"
+                      type="text"
+                      placeholder="Ej. @cliente_fut"
+                      value={customerSocial}
+                      onChange={(e) => {
+                        setCustomerSocial(e.target.value);
+                        setCustomerSavedNotice(null);
+                      }}
+                      className="mt-1 w-full min-h-[38px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="sale-customer-iddoc"
+                      className="block text-[11px] font-medium text-slate-300"
+                    >
+                      Cédula / RIF (opcional)
+                    </label>
+                    <input
+                      id="sale-customer-iddoc"
+                      data-testid="sale-customer-iddoc"
+                      type="text"
+                      placeholder="Ej. V-25.123.456"
+                      value={customerIdDoc}
+                      onChange={(e) => {
+                        setCustomerIdDoc(e.target.value);
+                        setCustomerSavedNotice(null);
+                      }}
+                      className="font-mono-num mt-1 w-full min-h-[38px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
                 </div>
+
+                {customerStatus.status === 'new' && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/80 pt-2.5">
+                    <p className="text-[11px] text-emerald-300/90">
+                      Sin compras previas · Se registrará automáticamente al facturar.
+                    </p>
+                    {onSaveCustomerProfile && (
+                      <button
+                        type="button"
+                        data-testid="btn-save-new-customer"
+                        onClick={handleSaveNewCustomerInline}
+                        className="inline-flex min-h-[32px] items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 transition-colors hover:bg-emerald-500/25"
+                      >
+                        <UserPlus className="h-3.5 w-3.5" aria-hidden="true" />
+                        Guardar ficha ahora
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {customerSavedNotice && (
+                  <p
+                    role="status"
+                    data-testid="customer-saved-notice"
+                    className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-medium text-emerald-300"
+                  >
+                    {customerSavedNotice}
+                  </p>
+                )}
               </div>
 
               <div>
@@ -1118,10 +1656,38 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                 </div>
               </div>
 
+              <div>
+                <label
+                  htmlFor="sale-delivery-date"
+                  className="flex items-center gap-1.5 text-xs font-medium text-slate-300"
+                >
+                  <Calendar className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
+                  Fecha de entrega / recordatorio (Google Calendar)
+                </label>
+                <input
+                  id="sale-delivery-date"
+                  data-testid="sale-delivery-date"
+                  type="date"
+                  value={deliveryDate}
+                  onChange={(e) => {
+                    setDeliveryDate(e.target.value);
+                    setFeedback(null);
+                  }}
+                  className="font-mono-num mt-1.5 w-full min-h-[42px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <p className="mt-1 text-[11px] text-slate-400">
+                  {deliveryDate
+                    ? `Se agendará recordatorio automático en Google Calendar el ${deliveryDate} con cliente y modelo(s).`
+                    : paymentStatus === 'Pendiente'
+                      ? 'Venta pendiente: si no eliges fecha, se agendará recordatorio automático para mañana a las 9:00 AM.'
+                      : 'Opcional: si ingresas una fecha de entrega, se agendará automáticamente en tu Google Calendar.'}
+                </p>
+              </div>
+
               {paymentStatus === 'Pendiente' && (
                 <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-200">
                   El saldo pendiente se registrará en Cuentas por Cobrar a nombre de{' '}
-                  <strong>{customerName.trim() || 'Cliente Mostrador'}</strong>.
+                  <strong>{customerName.trim() || 'Cliente Mostrador'}</strong> y se agendará en Google Calendar.
                 </p>
               )}
 
@@ -1206,19 +1772,51 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
               {feedback && (
                 <div
                   role="status"
-                  className={`flex items-start gap-2 rounded-lg px-3.5 py-2.5 text-xs font-medium ${
+                  data-testid="sales-feedback"
+                  className={`flex flex-col gap-2 rounded-lg px-3.5 py-2.5 text-xs font-medium ${
                     feedback.type === 'error'
                       ? 'border border-red-500/30 bg-red-500/10 text-red-300'
                       : 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
                   }`}
                 >
-                  {feedback.type === 'success' && (
-                    <CheckCircle2
-                      className="mt-0.5 h-4 w-4 shrink-0"
-                      aria-hidden="true"
-                    />
+                  <div className="flex items-start gap-2">
+                    {feedback.type === 'success' && (
+                      <CheckCircle2
+                        className="mt-0.5 h-4 w-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span>{feedback.text}</span>
+                  </div>
+                  {feedback.calendarNotice && (
+                    <div className="flex flex-wrap items-center gap-2 border-t border-emerald-500/20 pt-2 text-[11px] text-blue-200">
+                      <Calendar className="h-3.5 w-3.5 shrink-0 text-blue-300" aria-hidden="true" />
+                      <span data-testid="sale-calendar-status">{feedback.calendarNotice}</span>
+                      {feedback.calendarLink && (
+                        <a
+                          href={feedback.calendarLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 rounded-md border border-blue-400/40 bg-blue-500/15 px-2 py-0.5 font-semibold text-blue-200 hover:bg-blue-500/25"
+                        >
+                          Ver recordatorio
+                          <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                        </a>
+                      )}
+                      {feedback.needsCalendarAuth &&
+                        pendingCalendarSale &&
+                        onConnectGoogleCalendar && (
+                          <button
+                            type="button"
+                            data-testid="btn-retry-sale-calendar"
+                            onClick={() => void handleRetryPendingCalendarSale()}
+                            className="inline-flex items-center gap-1 rounded-md border border-blue-400/50 bg-blue-600/25 px-2.5 py-1 font-semibold text-white hover:bg-blue-600/40"
+                          >
+                            Conectar Google y Agendar
+                          </button>
+                        )}
+                    </div>
                   )}
-                  <span>{feedback.text}</span>
                 </div>
               )}
 
@@ -1451,9 +2049,17 @@ export function SalesView({ state, onRegisterMultiSale }: SalesViewProps) {
                           <span className="block font-semibold text-white">
                             {sale.customerName || sale.debtorName || 'Cliente Mostrador'}
                           </span>
-                          {(sale.customerCity || sale.customerPhone) && (
+                          {(sale.customerCity ||
+                            sale.customerPhone ||
+                            sale.customerSocial ||
+                            sale.customerIdDoc) && (
                             <span className="block text-[11px] text-slate-400">
-                              {[sale.customerCity, sale.customerPhone]
+                              {[
+                                sale.customerCity,
+                                sale.customerPhone,
+                                sale.customerSocial,
+                                sale.customerIdDoc,
+                              ]
                                 .filter(Boolean)
                                 .join(' · ')}
                             </span>

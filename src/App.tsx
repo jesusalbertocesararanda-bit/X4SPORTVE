@@ -3,10 +3,12 @@ import { AlertTriangle, Loader2 } from 'lucide-react';
 import { AppHeader } from './components/AppHeader';
 import { AuditView } from './components/AuditView';
 import { BulkImportView } from './components/BulkImportView';
+import { CatalogAdminView } from './components/CatalogAdminView';
 import { DashboardView } from './components/DashboardView';
 import { ExcelImportModal } from './components/ExcelImportModal';
 import { FinanceView } from './components/FinanceView';
 import { InventoryView } from './components/InventoryView';
+import { PublicCatalogView } from './components/PublicCatalogView';
 import { PurchasesView } from './components/PurchasesView';
 import { ReportsView } from './components/ReportsView';
 import { ReturnsView } from './components/ReturnsView';
@@ -20,6 +22,7 @@ import type {
   AppState,
   PartnerName,
   PaymentMethod,
+  PurchaseBatchRecord,
   SaleRecord,
   TabId,
 } from './types/erp';
@@ -27,6 +30,8 @@ import { fetchVenezuelaExchangeRates } from './utils/exchangeRatesApi';
 import {
   adjustInventoryPhysicalCount,
   applyAuditAdjustments,
+  attachPurchaseBatchCalendarMetadata,
+  attachSaleCalendarMetadata,
   collectReceivable,
   createImportOrder,
   getActiveOperationalAlerts,
@@ -40,7 +45,15 @@ import {
   reinvestPartnerDividends,
   round2,
   updateExchangeRates,
+  upsertCustomerProfile,
 } from './utils/finance';
+import {
+  clearCachedCalendarAccessToken,
+  initGoogleCalendarAuth,
+  signInWithGoogleCalendar,
+  signOutGoogleCalendar,
+  type GoogleCalendarAuthState,
+} from './utils/googleCalendar';
 import type {
   ActionResult,
   AdjustInventoryCountInput,
@@ -52,7 +65,12 @@ import type {
   RegisterImportBatchInput,
   RegisterMultiSaleInput,
   RegisterOperatingExpenseInput,
+  UpsertCustomerInput,
 } from './utils/finance';
+import {
+  markAllAlertsSeenIds,
+  toggleAlertSeenId,
+} from './utils/notifications';
 import {
   formatFirebaseError,
   purgeAllDataInFirebase,
@@ -64,6 +82,7 @@ import {
   writeErpState,
   writeExchangeRatesOnly,
 } from './utils/firebaseRealtime';
+import { isPublicCatalogModeFromLocation } from './utils/publicCatalog';
 
 export interface RateSyncInfo {
   status: 'idle' | 'loading' | 'synced' | 'error';
@@ -82,6 +101,7 @@ const MODULE_TITLES: Record<TabId, string> = {
   reportes: 'Reportes Consolidados Avanzados',
   cargas: 'Cargas Masivas de Datos (.xlsx)',
   'historial-precios': 'Historial de Precios y Proveedores',
+  catalogo: 'Catálogo Público para Clientes',
 };
 
 export default function App() {
@@ -100,6 +120,116 @@ export default function App() {
   const [rateSync, setRateSync] = useState<RateSyncInfo>({ status: 'idle' });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
+  const [isPublicCatalogRoute, setIsPublicCatalogRoute] = useState<boolean>(() =>
+    isPublicCatalogModeFromLocation(),
+  );
+  const [isCatalogPreview, setIsCatalogPreview] = useState(false);
+  const [calendarAuth, setCalendarAuth] = useState<GoogleCalendarAuthState>({
+    isConnected: false,
+    needsAuth: true,
+    isConnecting: false,
+  });
+  const [localSeenAlertIds, setLocalSeenAlertIds] = useState<string[]>(() => {
+    try {
+      if (typeof window === 'undefined' || !window.localStorage) return [];
+      const raw = window.localStorage.getItem('x4sport_seen_alerts_v1');
+      if (!raw) return [];
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed.filter((id): id is string => typeof id === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Inicializar listener de autenticación de Google Calendar (token solo en memoria)
+  useEffect(() => {
+    const unsubscribe = initGoogleCalendarAuth(
+      (user) => {
+        setCalendarAuth({
+          isConnected: true,
+          needsAuth: false,
+          isConnecting: false,
+          userEmail: user.email ?? undefined,
+          userName: user.displayName ?? undefined,
+        });
+      },
+      () => {
+        setCalendarAuth((prev) => ({
+          isConnected: false,
+          needsAuth: true,
+          isConnecting: false,
+          error: prev.error,
+        }));
+      },
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    const syncPublicRoute = () => {
+      setIsPublicCatalogRoute(isPublicCatalogModeFromLocation());
+    };
+    window.addEventListener('popstate', syncPublicRoute);
+    window.addEventListener('hashchange', syncPublicRoute);
+    return () => {
+      window.removeEventListener('popstate', syncPublicRoute);
+      window.removeEventListener('hashchange', syncPublicRoute);
+    };
+  }, []);
+
+  const handleConnectGoogleCalendar = useCallback(async (): Promise<boolean> => {
+    setCalendarAuth((prev) => ({
+      ...prev,
+      isConnecting: true,
+      error: undefined,
+    }));
+    try {
+      const { user } = await signInWithGoogleCalendar();
+      setCalendarAuth({
+        isConnected: true,
+        needsAuth: false,
+        isConnecting: false,
+        userEmail: user.email ?? undefined,
+        userName: user.displayName ?? undefined,
+      });
+      return true;
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'No se pudo completar el inicio de sesión con Google.';
+      setCalendarAuth({
+        isConnected: false,
+        needsAuth: true,
+        isConnecting: false,
+        error: message,
+      });
+      return false;
+    }
+  }, []);
+
+  const handleDisconnectGoogleCalendar = useCallback(async (): Promise<void> => {
+    await signOutGoogleCalendar();
+    setCalendarAuth({
+      isConnected: false,
+      needsAuth: true,
+      isConnecting: false,
+    });
+  }, []);
+
+  const handleCalendarAuthExpired = useCallback(() => {
+    clearCachedCalendarAccessToken();
+    setCalendarAuth({
+      isConnected: false,
+      needsAuth: true,
+      isConnecting: false,
+    });
+  }, []);
 
   // Suscripción en tiempo real (onValue) a Firebase RTDB con blindaje anti-borrado de localStorage
   useEffect(() => {
@@ -123,7 +253,12 @@ export default function App() {
   const commitState = useCallback(
     (
       res: ActionResult,
-    ): { ok: boolean; error?: string; createdSale?: SaleRecord } => {
+    ): {
+      ok: boolean;
+      error?: string;
+      createdSale?: SaleRecord;
+      createdBatch?: PurchaseBatchRecord;
+    } => {
       if (!res.ok) {
         return { ok: false, error: res.error };
       }
@@ -138,7 +273,11 @@ export default function App() {
           setDbError(formatFirebaseError(err));
         });
 
-      return { ok: true, createdSale: res.createdSale };
+      return {
+        ok: true,
+        createdSale: res.createdSale,
+        createdBatch: res.createdBatch,
+      };
     },
     [],
   );
@@ -262,6 +401,45 @@ export default function App() {
     [state],
   );
 
+  const effectiveSeenAlertIds = useMemo(() => {
+    const merged = new Set<string>([
+      ...localSeenAlertIds,
+      ...(state.seenAlertIds ?? []),
+    ]);
+    return Array.from(merged);
+  }, [localSeenAlertIds, state.seenAlertIds]);
+
+  const persistSeenAlerts = (nextIds: string[]) => {
+    setLocalSeenAlertIds(nextIds);
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(
+          'x4sport_seen_alerts_v1',
+          JSON.stringify(nextIds),
+        );
+      }
+    } catch {
+      // Ignore storage quota errors
+    }
+    commitState({
+      ok: true,
+      state: {
+        ...state,
+        seenAlertIds: nextIds,
+      },
+    });
+  };
+
+  const handleToggleAlertSeen = (alertId: string) => {
+    const nextIds = toggleAlertSeenId(effectiveSeenAlertIds, alertId);
+    persistSeenAlerts(nextIds);
+  };
+
+  const handleMarkAllAlertsSeen = () => {
+    const nextIds = markAllAlertsSeenIds(effectiveSeenAlertIds, activeAlerts);
+    persistSeenAlerts(nextIds);
+  };
+
   const handleUpdateRates = (bcv: number, usdt: number) => {
     const res = updateExchangeRates(state, bcv, usdt, 'manual');
     if (res.ok) {
@@ -280,6 +458,9 @@ export default function App() {
 
   const handleRegisterMultiSale = (input: RegisterMultiSaleInput) =>
     commitState(registerMultiItemSale(state, input));
+
+  const handleSaveCustomerProfile = (input: UpsertCustomerInput) =>
+    commitState(upsertCustomerProfile(state, input));
 
   const handleRegisterImportBatch = (input: RegisterImportBatchInput) =>
     commitState(createImportOrder(state, input));
@@ -318,6 +499,39 @@ export default function App() {
 
   const handleProcessReturnOrExchange = (input: ProcessReturnExchangeInput) =>
     commitState(processReturnOrExchange(state, input));
+
+  const handleAttachSaleCalendarMetadata = useCallback(
+    (saleId: string, eventId: string, htmlLink?: string) => {
+      setState((prev) => {
+        const next = attachSaleCalendarMetadata(prev, saleId, eventId, htmlLink);
+        saveLocalStateBackup(next, { allowOverwriteEmpty: true });
+        void writeErpState(next).catch((err: unknown) => {
+          setDbError(formatFirebaseError(err));
+        });
+        return next;
+      });
+    },
+    [],
+  );
+
+  const handleAttachPurchaseCalendarMetadata = useCallback(
+    (batchId: string, eventId: string, htmlLink?: string) => {
+      setState((prev) => {
+        const next = attachPurchaseBatchCalendarMetadata(
+          prev,
+          batchId,
+          eventId,
+          htmlLink,
+        );
+        saveLocalStateBackup(next, { allowOverwriteEmpty: true });
+        void writeErpState(next).catch((err: unknown) => {
+          setDbError(formatFirebaseError(err));
+        });
+        return next;
+      });
+    },
+    [],
+  );
 
   const handleResetBaselineData = () => {
     void resetBaselineStateInFirebase()
@@ -363,6 +577,107 @@ export default function App() {
     setDbError(null);
   };
 
+  const handleToggleCatalogEnabled = useCallback((enabled: boolean) => {
+    setState((prev) => {
+      const next: AppState = {
+        ...prev,
+        catalogEnabled: enabled,
+      };
+      saveLocalStateBackup(next, { allowOverwriteEmpty: true });
+      void writeErpState(next).catch((err: unknown) => {
+        setDbError(formatFirebaseError(err));
+      });
+      return next;
+    });
+  }, []);
+
+  const handleSaveCatalogPhoto = useCallback(
+    (modelKey: string, photoUrl: string) => {
+      if (!modelKey || !photoUrl) return;
+      setState((prev) => {
+        const next: AppState = {
+          ...prev,
+          catalogPhotos: {
+            ...(prev.catalogPhotos ?? {}),
+            [modelKey]: photoUrl,
+          },
+        };
+        saveLocalStateBackup(next, { allowOverwriteEmpty: true });
+        void writeErpState(next).catch((err: unknown) => {
+          setDbError(formatFirebaseError(err));
+        });
+        return next;
+      });
+    },
+    [],
+  );
+
+  const handleRemoveCatalogPhoto = useCallback((modelKey: string) => {
+    if (!modelKey) return;
+    setState((prev) => {
+      const updated = { ...(prev.catalogPhotos ?? {}) };
+      delete updated[modelKey];
+      const next: AppState = {
+        ...prev,
+        catalogPhotos: updated,
+      };
+      saveLocalStateBackup(next, { allowOverwriteEmpty: true });
+      void writeErpState(next).catch((err: unknown) => {
+        setDbError(formatFirebaseError(err));
+      });
+      return next;
+    });
+  }, []);
+
+  const handleSaveCatalogKeywords = useCallback(
+    (modelKey: string, keywords: string) => {
+      if (!modelKey) return;
+      setState((prev) => {
+        const updated = { ...(prev.catalogKeywords ?? {}) };
+        const trimmed = keywords.trim();
+        if (trimmed) {
+          updated[modelKey] = trimmed;
+        } else {
+          delete updated[modelKey];
+        }
+        const next: AppState = {
+          ...prev,
+          catalogKeywords: updated,
+        };
+        saveLocalStateBackup(next, { allowOverwriteEmpty: true });
+        void writeErpState(next).catch((err: unknown) => {
+          setDbError(formatFirebaseError(err));
+        });
+        return next;
+      });
+    },
+    [],
+  );
+
+  if (isPublicCatalogRoute || isCatalogPreview) {
+    if (isPublicCatalogRoute && isHydratingDb) {
+      return (
+        <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-[#060B16] p-6 text-center text-slate-100">
+          <Loader2
+            className="h-8 w-8 animate-spin text-blue-400"
+            aria-hidden="true"
+          />
+          <p className="font-display text-base font-semibold text-white">
+            Cargando Catálogo Oficial X4SPORT...
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <PublicCatalogView
+        state={state}
+        isPreviewMode={isCatalogPreview && !isPublicCatalogRoute}
+        onExitPreview={() => setIsCatalogPreview(false)}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#060B16] text-slate-100 flex">
       <Sidebar
@@ -379,6 +694,9 @@ export default function App() {
         <AppHeader
           moduleTitle={MODULE_TITLES[activeTab]}
           alerts={activeAlerts}
+          seenAlertIds={effectiveSeenAlertIds}
+          onToggleAlertSeen={handleToggleAlertSeen}
+          onMarkAllAlertsSeen={handleMarkAllAlertsSeen}
           onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
           onStartSale={() => setActiveTab('ventas')}
           onNavigateTab={setActiveTab}
@@ -420,7 +738,13 @@ export default function App() {
               {activeTab === 'ventas' && (
                 <SalesView
                   state={state}
+                  calendarAuth={calendarAuth}
+                  onConnectGoogleCalendar={handleConnectGoogleCalendar}
+                  onDisconnectGoogleCalendar={handleDisconnectGoogleCalendar}
+                  onCalendarAuthExpired={handleCalendarAuthExpired}
+                  onAttachSaleCalendarMetadata={handleAttachSaleCalendarMetadata}
                   onRegisterMultiSale={handleRegisterMultiSale}
+                  onSaveCustomerProfile={handleSaveCustomerProfile}
                 />
               )}
 
@@ -448,6 +772,14 @@ export default function App() {
               {activeTab === 'compras' && (
                 <PurchasesView
                   state={state}
+                  calendarAuth={calendarAuth}
+                  onConnectGoogleCalendar={handleConnectGoogleCalendar}
+                  onDisconnectGoogleCalendar={handleDisconnectGoogleCalendar}
+                  onCalendarAuthExpired={handleCalendarAuthExpired}
+                  onAttachPurchaseCalendarMetadata={
+                    handleAttachPurchaseCalendarMetadata
+                  }
+                  onSaveCatalogPhoto={handleSaveCatalogPhoto}
                   onRegisterImportBatch={handleRegisterImportBatch}
                   onReceiveImportBatch={handleReceiveImportBatch}
                 />
@@ -476,6 +808,16 @@ export default function App() {
               {activeTab === 'historial-precios' && (
                 <SupplierPriceHistoryView state={state} />
               )}
+              {activeTab === 'catalogo' && (
+                <CatalogAdminView
+                  state={state}
+                  onToggleCatalogEnabled={handleToggleCatalogEnabled}
+                  onSaveCatalogPhoto={handleSaveCatalogPhoto}
+                  onRemoveCatalogPhoto={handleRemoveCatalogPhoto}
+                  onSaveCatalogKeywords={handleSaveCatalogKeywords}
+                  onOpenCatalogPreview={() => setIsCatalogPreview(true)}
+                />
+              )}
             </>
           )}
         </main>
@@ -485,6 +827,11 @@ export default function App() {
         isOpen={isSettingsOpen}
         state={state}
         rateSync={rateSync}
+        calendarAuth={calendarAuth}
+        onConnectGoogleCalendar={handleConnectGoogleCalendar}
+        onDisconnectGoogleCalendar={handleDisconnectGoogleCalendar}
+        onToggleCatalogEnabled={handleToggleCatalogEnabled}
+        onOpenCatalogAdmin={() => setActiveTab('catalogo')}
         onClose={() => setIsSettingsOpen(false)}
         onOpenExcelImport={() => setIsExcelModalOpen(true)}
         onSyncRatesFromApi={syncRatesFromApi}

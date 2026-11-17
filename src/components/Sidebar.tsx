@@ -14,6 +14,7 @@ import {
   Settings,
   ShoppingBag,
   ShoppingCart,
+  Store,
   UploadCloud,
   Wallet,
   X,
@@ -48,6 +49,7 @@ const SIDEBAR_GROUPS: SidebarGroup[] = [
       { id: 'dashboard', label: 'Panel Principal', icon: LayoutDashboard },
       { id: 'ventas', label: 'Ventas y Facturación', icon: ShoppingBag },
       { id: 'devoluciones', label: 'Devoluciones y Cambios', icon: ArrowLeftRight },
+      { id: 'catalogo', label: 'Catálogo Público', icon: Store },
     ],
   },
   {

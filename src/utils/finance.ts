@@ -14,6 +14,7 @@ import type {
   AuditMovement,
   CapitalInjectionDestination,
   CapitalInjectionRecord,
+  CustomerProfile,
   ExpenseCategory,
   FifoBatch,
   FifoConsumptionDetail,
@@ -43,6 +44,11 @@ import type {
   SinglePaymentMethod,
   TeamCategory,
 } from '../types/erp';
+import {
+  isWalkInCustomerName,
+  normalizeCustomerText,
+  normalizePhoneDigits,
+} from './customers';
 
 export const EXPENSE_CATEGORIES: ExpenseCategory[] = [
   'Gastos de Comercialización/Publicidad',
@@ -526,11 +532,14 @@ export interface RegisterMultiSaleInput {
   customerName?: string;
   customerCity?: string;
   customerPhone?: string;
+  customerSocial?: string;
+  customerIdDoc?: string;
   seller: SellerName;
   paymentStatus: PaymentStatus;
   paymentMethod?: PaymentMethod;
   paymentSplits?: PaymentSplit[];
   debtorName?: string;
+  deliveryDate?: string;
 }
 
 export interface RegisterSaleInput {
@@ -540,11 +549,22 @@ export interface RegisterSaleInput {
   customerName?: string;
   customerCity?: string;
   customerPhone?: string;
+  customerSocial?: string;
+  customerIdDoc?: string;
   seller: SellerName;
   paymentStatus: PaymentStatus;
   paymentMethod?: PaymentMethod;
   paymentSplits?: PaymentSplit[];
   debtorName?: string;
+  deliveryDate?: string;
+}
+
+export interface UpsertCustomerInput {
+  name: string;
+  phone?: string;
+  city?: string;
+  social?: string;
+  idDoc?: string;
 }
 
 export interface ActionResult {
@@ -552,6 +572,88 @@ export interface ActionResult {
   error?: string;
   state: AppState;
   createdSale?: SaleRecord;
+  createdBatch?: PurchaseBatchRecord;
+}
+
+function mergeCustomerProfileIntoList(
+  existingList: CustomerProfile[] | undefined,
+  input: UpsertCustomerInput,
+  now: string,
+): CustomerProfile[] | undefined {
+  const cleanName = input.name.trim();
+  if (!cleanName || isWalkInCustomerName(cleanName)) {
+    return existingList;
+  }
+
+  const cleanPhone = input.phone?.trim() || undefined;
+  const cleanCity = input.city?.trim() || undefined;
+  const cleanSocial = input.social?.trim() || undefined;
+  const cleanIdDoc = input.idDoc?.trim() || undefined;
+
+  const list = [...(existingList ?? [])];
+  const normName = normalizeCustomerText(cleanName);
+  const phoneDigits = normalizePhoneDigits(cleanPhone);
+
+  const matchIdx = list.findIndex((c) => {
+    const cName = normalizeCustomerText(c.name);
+    const cPhone = normalizePhoneDigits(c.phone);
+    return (
+      (Boolean(normName) && cName === normName) ||
+      (phoneDigits.length >= 7 && cPhone.length >= 7 && cPhone === phoneDigits)
+    );
+  });
+
+  if (matchIdx >= 0) {
+    const prev = list[matchIdx];
+    list[matchIdx] = {
+      ...prev,
+      name: cleanName,
+      phone: cleanPhone ?? prev.phone,
+      city: cleanCity ?? prev.city,
+      social: cleanSocial ?? prev.social,
+      idDoc: cleanIdDoc ?? prev.idDoc,
+      updatedAt: now,
+    };
+    return list;
+  }
+
+  return [
+    {
+      id: `cust-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: cleanName,
+      phone: cleanPhone,
+      city: cleanCity,
+      social: cleanSocial,
+      idDoc: cleanIdDoc,
+      createdAt: now,
+      updatedAt: now,
+    },
+    ...list,
+  ];
+}
+
+export function upsertCustomerProfile(
+  state: AppState,
+  input: UpsertCustomerInput,
+): ActionResult {
+  const cleanName = input.name.trim();
+  if (!cleanName || isWalkInCustomerName(cleanName)) {
+    return {
+      ok: false,
+      error: 'Ingresa el nombre completo del cliente para guardar su ficha.',
+      state,
+    };
+  }
+
+  const now = new Date().toISOString();
+  const nextCustomers = mergeCustomerProfileIntoList(state.customers, input, now);
+  return {
+    ok: true,
+    state: {
+      ...state,
+      customers: nextCustomers,
+    },
+  };
 }
 
 export function registerMultiItemSale(
@@ -570,6 +672,8 @@ export function registerMultiItemSale(
   const cleanCustomer = rawCustomer || 'Cliente Mostrador';
   const cleanCity = input.customerCity?.trim() || undefined;
   const cleanPhone = input.customerPhone?.trim() || undefined;
+  const cleanSocial = input.customerSocial?.trim() || undefined;
+  const cleanIdDoc = input.customerIdDoc?.trim() || undefined;
   const cleanDebtor = (input.debtorName?.trim() || cleanCustomer).trim();
   const paymentMethod: PaymentMethod = input.paymentMethod ?? 'Efectivo ($)';
 
@@ -791,15 +895,30 @@ export function registerMultiItemSale(
     customerName: cleanCustomer,
     customerCity: cleanCity,
     customerPhone: cleanPhone,
+    customerSocial: cleanSocial,
+    customerIdDoc: cleanIdDoc,
     seller: input.seller,
     paymentStatus: input.paymentStatus,
     paymentMethod,
     paymentSplits: resolvedSplits,
     bcvEquivalent,
     debtorName: input.paymentStatus === 'Pendiente' ? cleanDebtor : undefined,
+    deliveryDate: input.deliveryDate?.trim() || undefined,
     breakdown,
     createdAt: now,
   };
+
+  const nextCustomers = mergeCustomerProfileIntoList(
+    state.customers,
+    {
+      name: cleanCustomer,
+      phone: cleanPhone,
+      city: cleanCity,
+      social: cleanSocial,
+      idDoc: cleanIdDoc,
+    },
+    now,
+  );
 
   const nextState: AppState = {
     ...state,
@@ -807,6 +926,7 @@ export function registerMultiItemSale(
     inventory: workingInventory,
     receivables: nextReceivables,
     sales: [saleRecord, ...state.sales],
+    ...(nextCustomers ? { customers: nextCustomers } : {}),
     nextInvoiceSeq: invoiceSeq + 1,
     funds: {
       ...state.funds,
@@ -857,11 +977,14 @@ export function registerSale(
     customerName: input.customerName?.trim() || input.debtorName?.trim(),
     customerCity: input.customerCity,
     customerPhone: input.customerPhone,
+    customerSocial: input.customerSocial,
+    customerIdDoc: input.customerIdDoc,
     seller: input.seller,
     paymentStatus: input.paymentStatus,
     paymentMethod: input.paymentMethod,
     paymentSplits: input.paymentSplits,
     debtorName: input.debtorName,
+    deliveryDate: input.deliveryDate,
   });
 }
 
@@ -877,6 +1000,7 @@ export interface BatchPurchaseLineInput {
 
 export interface RegisterImportBatchInput {
   entryDate: string;
+  estimatedArrivalDate?: string;
   referenceName: string;
   shippingType: ShippingType;
   totalFreightCost: number;
@@ -1047,11 +1171,14 @@ export function createImportOrder(
       ? round2(input.usdtRate)
       : state.exchangeRates.usdt;
 
+  const estimatedArrivalDate = input.estimatedArrivalDate?.trim() || undefined;
+
   const batchRecord: PurchaseBatchRecord = {
     id: batchId,
     status: 'EN TRÁNSITO',
     fundingSource,
     entryDate,
+    ...(estimatedArrivalDate ? { estimatedArrivalDate } : {}),
     referenceName: refName,
     shippingType: input.shippingType,
     orderedTotalUnits: totalUnits,
@@ -1094,7 +1221,47 @@ export function createImportOrder(
     ],
   };
 
-  return { ok: true, state: nextState };
+  return { ok: true, state: nextState, createdBatch: batchRecord };
+}
+
+export function attachSaleCalendarMetadata(
+  state: AppState,
+  saleId: string,
+  calendarEventId: string,
+  calendarEventLink?: string,
+): AppState {
+  return {
+    ...state,
+    sales: state.sales.map((s) =>
+      s.id === saleId
+        ? {
+            ...s,
+            calendarEventId,
+            ...(calendarEventLink ? { calendarEventLink } : {}),
+          }
+        : s,
+    ),
+  };
+}
+
+export function attachPurchaseBatchCalendarMetadata(
+  state: AppState,
+  batchId: string,
+  calendarEventId: string,
+  calendarEventLink?: string,
+): AppState {
+  return {
+    ...state,
+    purchaseBatches: state.purchaseBatches.map((b) =>
+      b.id === batchId
+        ? {
+            ...b,
+            calendarEventId,
+            ...(calendarEventLink ? { calendarEventLink } : {}),
+          }
+        : b,
+    ),
+  };
 }
 
 /**
@@ -2930,6 +3097,22 @@ export function normalizeAppState(raw: unknown): AppState {
       inventoryAdjustments: toArray<InventoryAdjustmentRecord>(
         parsed.inventoryAdjustments,
       ),
+      ...(parsed.customers
+        ? { customers: toArray<CustomerProfile>(parsed.customers) }
+        : {}),
+      ...(parsed.seenAlertIds
+        ? { seenAlertIds: toArray<string>(parsed.seenAlertIds) }
+        : {}),
+      catalogEnabled:
+        typeof parsed.catalogEnabled === 'boolean'
+          ? parsed.catalogEnabled
+          : true,
+      ...(parsed.catalogPhotos && typeof parsed.catalogPhotos === 'object'
+        ? { catalogPhotos: { ...parsed.catalogPhotos } }
+        : {}),
+      ...(parsed.catalogKeywords && typeof parsed.catalogKeywords === 'object'
+        ? { catalogKeywords: { ...parsed.catalogKeywords } }
+        : {}),
       historicalNetProfit:
         typeof parsed.historicalNetProfit === 'number' &&
         Number.isFinite(parsed.historicalNetProfit)

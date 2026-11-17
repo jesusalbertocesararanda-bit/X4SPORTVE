@@ -9,7 +9,8 @@ export type TabId =
   | 'estadisticas'
   | 'reportes'
   | 'cargas'
-  | 'historial-precios';
+  | 'historial-precios'
+  | 'catalogo';
 
 export type TeamCategory = string;
 
@@ -129,12 +130,17 @@ export interface SaleRecord {
   customerName: string;
   customerCity?: string;
   customerPhone?: string;
+  customerSocial?: string;
+  customerIdDoc?: string;
   seller: SellerName;
   paymentStatus: PaymentStatus;
   paymentMethod: PaymentMethod;
   paymentSplits?: PaymentSplit[];
   bcvEquivalent?: number;
   debtorName?: string;
+  deliveryDate?: string; // YYYY-MM-DD fecha de entrega o recordatorio
+  calendarEventId?: string;
+  calendarEventLink?: string;
   breakdown: FourLayerBreakdown;
   createdAt: string;
 }
@@ -192,7 +198,10 @@ export interface PurchaseBatchRecord {
   status: PurchaseBatchStatus;
   fundingSource: PurchaseFundingSource;
   entryDate: string; // Order date (YYYY-MM-DD)
+  estimatedArrivalDate?: string; // Fecha estimada de llegada (YYYY-MM-DD)
   receivedDate?: string; // Warehouse arrival date for FIFO (YYYY-MM-DD)
+  calendarEventId?: string;
+  calendarEventLink?: string;
   referenceName: string;
   shippingType: ShippingType;
   orderedTotalUnits: number;
@@ -304,6 +313,17 @@ export interface AuditMovement {
   createdAt: string;
 }
 
+export interface CustomerProfile {
+  id: string;
+  name: string;
+  phone?: string;
+  city?: string;
+  social?: string;
+  idDoc?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppState {
   cashOnHand: number;
   exchangeRates: ExchangeRates;
@@ -318,6 +338,11 @@ export interface AppState {
   operatingExpenses: OperatingExpenseRecord[];
   capitalInjections: CapitalInjectionRecord[];
   inventoryAdjustments: InventoryAdjustmentRecord[];
+  customers?: CustomerProfile[];
+  seenAlertIds?: string[];
+  catalogEnabled?: boolean;
+  catalogPhotos?: Record<string, string>;
+  catalogKeywords?: Record<string, string>;
   historicalNetProfit?: number;
   userPurgedEmpty?: boolean;
   isExplicitDemo?: boolean;

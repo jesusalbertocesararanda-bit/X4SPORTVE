@@ -1,21 +1,32 @@
 import { useEffect, useState } from 'react';
 import {
+  Check,
   CheckCircle2,
+  Copy,
   Download,
   FileSpreadsheet,
   Globe,
   RefreshCcw,
   RefreshCw,
   Settings,
+  Store,
   X,
 } from 'lucide-react';
 import type { RateSyncInfo } from '../App';
 import type { AppState } from '../types/erp';
+import type { GoogleCalendarAuthState } from '../utils/googleCalendar';
+import { buildShareableCatalogUrl } from '../utils/publicCatalog';
+import { GoogleCalendarBanner } from './GoogleCalendarBanner';
 
 interface SettingsModalProps {
   isOpen: boolean;
   state: AppState;
   rateSync: RateSyncInfo;
+  calendarAuth: GoogleCalendarAuthState;
+  onConnectGoogleCalendar: () => Promise<boolean>;
+  onDisconnectGoogleCalendar: () => Promise<void>;
+  onToggleCatalogEnabled: (enabled: boolean) => void;
+  onOpenCatalogAdmin: () => void;
   onClose: () => void;
   onOpenExcelImport: () => void;
   onSyncRatesFromApi: () => Promise<{ ok: boolean; error?: string }>;
@@ -27,6 +38,11 @@ export function SettingsModal({
   isOpen,
   state,
   rateSync,
+  calendarAuth,
+  onConnectGoogleCalendar,
+  onDisconnectGoogleCalendar,
+  onToggleCatalogEnabled,
+  onOpenCatalogAdmin,
   onClose,
   onOpenExcelImport,
   onSyncRatesFromApi,
@@ -37,10 +53,29 @@ export function SettingsModal({
   const [usdtInput, setUsdtInput] = useState(state.exchangeRates.usdt.toFixed(2));
   const [downloadingHtml, setDownloadingHtml] = useState(false);
   const [confirmDemoReset, setConfirmDemoReset] = useState(false);
+  const [copiedCatalogUrl, setCopiedCatalogUrl] = useState(false);
   const [feedback, setFeedback] = useState<{
     type: 'success' | 'error';
     text: string;
   } | null>(null);
+
+  const catalogEnabled = state.catalogEnabled !== false;
+  const shareableCatalogUrl = buildShareableCatalogUrl();
+
+  const handleCopyCatalogUrl = async () => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareableCatalogUrl);
+      }
+      setCopiedCatalogUrl(true);
+      setTimeout(() => setCopiedCatalogUrl(false), 2000);
+    } catch {
+      setFeedback({
+        type: 'success',
+        text: `Enlace del catálogo público: ${shareableCatalogUrl}`,
+      });
+    }
+  };
 
   useEffect(() => {
     setBcvInput(state.exchangeRates.bcv.toFixed(2));
@@ -175,6 +210,74 @@ export function SettingsModal({
             <span>{feedback.text}</span>
           </div>
         )}
+
+        {/* Integración Google Calendar */}
+        <GoogleCalendarBanner
+          variant="card"
+          authState={calendarAuth}
+          onConnect={onConnectGoogleCalendar}
+          onDisconnect={onDisconnectGoogleCalendar}
+        />
+
+        {/* Catálogo Público para Clientes */}
+        <section className="space-y-3 rounded-xl border border-slate-800 bg-[#080E1C] p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Store className="h-4 w-4 text-blue-400" aria-hidden="true" />
+                Catálogo Público Interactivo (WhatsApp)
+              </h3>
+              <p className="mt-0.5 text-xs text-slate-400">
+                Activa o pausa el enlace público para clientes sincronizado en tiempo real con el inventario FIFO.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={catalogEnabled}
+              aria-label="Activar catálogo público para clientes"
+              data-testid="settings-catalog-switch"
+              onClick={() => onToggleCatalogEnabled(!catalogEnabled)}
+              className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+                catalogEnabled
+                  ? 'border-emerald-400/50 bg-emerald-600'
+                  : 'border-slate-600 bg-slate-800'
+              }`}
+            >
+              <span
+                className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                  catalogEnabled ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => void handleCopyCatalogUrl()}
+              className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-700 bg-[#0D1526] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800 hover:text-white"
+            >
+              {copiedCatalogUrl ? (
+                <Check className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+              ) : (
+                <Copy className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
+              )}
+              {copiedCatalogUrl ? '¡Enlace copiado!' : 'Copiar Enlace'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenCatalogAdmin();
+              }}
+              className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-600/15 px-3 py-1.5 text-xs font-semibold text-blue-200 hover:bg-blue-600/25 hover:text-white"
+            >
+              Gestionar Fotos y Vista Previa
+            </button>
+          </div>
+        </section>
 
         {/* Respaldo Excel & Portabilidad */}
         <section className="space-y-3 rounded-xl border border-slate-800 bg-[#080E1C] p-4">

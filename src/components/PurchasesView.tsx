@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Calendar,
+  Camera,
   CheckCircle2,
   Clock,
+  ExternalLink,
   PackageCheck,
   Plus,
   ShoppingCart,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react';
 import { getDefaultSalePrice } from '../data/initialState';
@@ -32,12 +36,35 @@ import {
   round2,
   round4,
 } from '../utils/finance';
+import {
+  buildPurchaseArrivalCalendarEvent,
+  createGoogleCalendarEvent,
+  shouldSchedulePurchaseCalendarEvent,
+  type GoogleCalendarAuthState,
+} from '../utils/googleCalendar';
+import { GoogleCalendarBanner } from './GoogleCalendarBanner';
+import {
+  compressCatalogImageFile,
+  normalizeCatalogImageUrl,
+  normalizeCatalogModelKey,
+  resolveCatalogPhoto,
+} from '../utils/publicCatalog';
 
 interface PurchasesViewProps {
   state: AppState;
+  calendarAuth?: GoogleCalendarAuthState;
+  onConnectGoogleCalendar?: () => Promise<boolean>;
+  onDisconnectGoogleCalendar?: () => Promise<void>;
+  onCalendarAuthExpired?: () => void;
+  onAttachPurchaseCalendarMetadata?: (
+    batchId: string,
+    eventId: string,
+    htmlLink?: string,
+  ) => void;
+  onSaveCatalogPhoto?: (modelKey: string, photoUrl: string) => void;
   onRegisterImportBatch: (
     input: RegisterImportBatchInput,
-  ) => { ok: boolean; error?: string };
+  ) => { ok: boolean; error?: string; createdBatch?: PurchaseBatchRecord };
   onReceiveImportBatch: (
     input: ReceiveImportBatchInput,
   ) => { ok: boolean; error?: string };
@@ -69,6 +96,12 @@ const EMPTY_SIZE_MATRIX: Record<JerseySize, string> = {
 
 export function PurchasesView({
   state,
+  calendarAuth,
+  onConnectGoogleCalendar,
+  onDisconnectGoogleCalendar,
+  onCalendarAuthExpired,
+  onAttachPurchaseCalendarMetadata,
+  onSaveCatalogPhoto,
   onRegisterImportBatch,
   onReceiveImportBatch,
 }: PurchasesViewProps) {
@@ -78,6 +111,7 @@ export function PurchasesView({
 
   // Etapa 1: Batch header fields
   const [entryDate, setEntryDate] = useState(todayStr);
+  const [estimatedArrivalDate, setEstimatedArrivalDate] = useState('');
   const [referenceName, setReferenceName] = useState('Aéreo Noviembre');
   const [shippingType, setShippingType] = useState<ShippingType>('Aéreo');
   const [totalFreightCost, setTotalFreightCost] = useState('15.00');
@@ -99,13 +133,27 @@ export function PurchasesView({
   const [salePriceTouched, setSalePriceTouched] = useState(false);
   const [sizeMatrix, setSizeMatrix] =
     useState<Record<JerseySize, string>>(EMPTY_SIZE_MATRIX);
+  const [itemPhotoInput, setItemPhotoInput] = useState('');
+  const [photoUploading, setPhotoUploading] = useState(false);
 
   const detectedTeam = useMemo(() => extractTeamFromModel(model), [model]);
+  const existingCatalogPhoto = useMemo(
+    () =>
+      model.trim()
+        ? resolveCatalogPhoto(model, version, state.catalogPhotos)
+        : undefined,
+    [state.catalogPhotos, model, version],
+  );
 
   const [draftItems, setDraftItems] = useState<DraftBatchLine[]>([]);
+  const [pendingCalendarBatch, setPendingCalendarBatch] =
+    useState<PurchaseBatchRecord | null>(null);
   const [feedback, setFeedback] = useState<{
     type: 'success' | 'error';
     text: string;
+    calendarNotice?: string;
+    calendarLink?: string;
+    needsCalendarAuth?: boolean;
   } | null>(null);
 
   // Etapa 2: Modal state for receiving an EN TRÁNSITO batch
@@ -237,9 +285,43 @@ export function PurchasesView({
       salePrice: parsedSalePrice,
     }));
 
+    if (itemPhotoInput.trim() && onSaveCatalogPhoto) {
+      const normalizedPhoto = normalizeCatalogImageUrl(itemPhotoInput);
+      if (normalizedPhoto) {
+        onSaveCatalogPhoto(
+          normalizeCatalogModelKey(cleanModel, version),
+          normalizedPhoto,
+        );
+      }
+    }
+
     setDraftItems((prev) => [...prev, ...newLines]);
     setSizeMatrix(EMPTY_SIZE_MATRIX);
     setSalePriceTouched(false);
+    setItemPhotoInput('');
+  };
+
+  const handlePurchasePhotoUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setPhotoUploading(true);
+    try {
+      const dataUrl = await compressCatalogImageFile(file);
+      setItemPhotoInput(dataUrl);
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'No se pudo procesar la foto del modelo.',
+      });
+    } finally {
+      setPhotoUploading(false);
+    }
   };
 
   const handleRemoveLine = (lineId: string) => {
@@ -247,8 +329,64 @@ export function PurchasesView({
     setFeedback(null);
   };
 
+  const schedulePurchaseInCalendar = async (batch: PurchaseBatchRecord) => {
+    const calRes = await createGoogleCalendarEvent(
+      buildPurchaseArrivalCalendarEvent(batch),
+    );
+    if (calRes.ok) {
+      setPendingCalendarBatch(null);
+      if (calRes.eventId) {
+        onAttachPurchaseCalendarMetadata?.(
+          batch.id,
+          calRes.eventId,
+          calRes.htmlLink,
+        );
+      }
+      setFeedback((prev) =>
+        prev
+          ? {
+              ...prev,
+              calendarNotice: `Evento de llegada agendado en Google Calendar para el ${batch.estimatedArrivalDate}.`,
+              calendarLink: calRes.htmlLink,
+              needsCalendarAuth: false,
+            }
+          : {
+              type: 'success',
+              text: `Lote "${batch.referenceName}" sincronizado con Google Calendar.`,
+              calendarNotice: `Evento de llegada agendado para el ${batch.estimatedArrivalDate}.`,
+              calendarLink: calRes.htmlLink,
+              needsCalendarAuth: false,
+            },
+      );
+    } else if (calRes.needsAuth) {
+      setPendingCalendarBatch(batch);
+      onCalendarAuthExpired?.();
+      setFeedback((prev) =>
+        prev
+          ? {
+              ...prev,
+              calendarNotice:
+                'Conecta Google Calendar para agendar automáticamente la fecha estimada de llegada.',
+              needsCalendarAuth: true,
+            }
+          : null,
+      );
+    } else {
+      setFeedback((prev) =>
+        prev
+          ? {
+              ...prev,
+              calendarNotice: `No se pudo agendar en Google Calendar: ${calRes.error ?? 'error desconocido'}`,
+              needsCalendarAuth: false,
+            }
+          : null,
+      );
+    }
+  };
+
   const handleSaveBatch = () => {
     setFeedback(null);
+    setPendingCalendarBatch(null);
 
     if (draftItems.length === 0) {
       setFeedback({
@@ -258,9 +396,11 @@ export function PurchasesView({
       return;
     }
 
+    const cleanArrivalDate = estimatedArrivalDate.trim() || undefined;
     const parsedBatchUsdt = round2(Number(batchUsdtRate) || 0);
     const res = onRegisterImportBatch({
       entryDate,
+      estimatedArrivalDate: cleanArrivalDate,
       referenceName,
       shippingType,
       totalFreightCost: parsedFreight,
@@ -291,13 +431,32 @@ export function PurchasesView({
         ? 'Fondo de Reinversión'
         : 'Caja General';
 
+    const willSchedule =
+      res.createdBatch && shouldSchedulePurchaseCalendarEvent(res.createdBatch);
+
     setFeedback({
       type: 'success',
       text: `Orden "${referenceName.trim()}" (${batchSummary.totalUnits} uds) guardada EN TRÁNSITO. Descontados ${formatUSD(
         batchSummary.totalLanded,
       )} de ${fundLabel}; el inventario se sumará al recibir en bodega.`,
+      ...(willSchedule
+        ? { calendarNotice: 'Agendando fecha estimada en Google Calendar...' }
+        : {}),
     });
     setDraftItems([]);
+    setEstimatedArrivalDate('');
+
+    if (res.createdBatch && shouldSchedulePurchaseCalendarEvent(res.createdBatch)) {
+      void schedulePurchaseInCalendar(res.createdBatch);
+    }
+  };
+
+  const handleRetryPendingCalendarBatch = async () => {
+    if (!pendingCalendarBatch || !onConnectGoogleCalendar) return;
+    const connected = await onConnectGoogleCalendar();
+    if (connected) {
+      await schedulePurchaseInCalendar(pendingCalendarBatch);
+    }
   };
 
   const openReceiveModal = (batch: PurchaseBatchRecord) => {
@@ -495,22 +654,64 @@ export function PurchasesView({
         })}
       </div>
 
+      {calendarAuth && onConnectGoogleCalendar && onDisconnectGoogleCalendar && (
+        <GoogleCalendarBanner
+          variant="compact"
+          authState={calendarAuth}
+          onConnect={onConnectGoogleCalendar}
+          onDisconnect={onDisconnectGoogleCalendar}
+          contextText="Cada compra o lote con fecha estimada de llegada crea un evento automático en tu Google Calendar."
+        />
+      )}
+
       {feedback && (
         <div
           role="status"
-          className={`flex items-start gap-2 rounded-xl px-4 py-3 text-xs font-medium ${
+          data-testid="purchases-feedback"
+          className={`flex flex-col gap-2 rounded-xl px-4 py-3 text-xs font-medium ${
             feedback.type === 'error'
               ? 'border border-red-500/30 bg-red-500/10 text-red-300'
               : 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
           }`}
         >
-          {feedback.type === 'success' && (
-            <CheckCircle2
-              className="mt-0.5 h-4 w-4 shrink-0"
-              aria-hidden="true"
-            />
+          <div className="flex items-start gap-2">
+            {feedback.type === 'success' && (
+              <CheckCircle2
+                className="mt-0.5 h-4 w-4 shrink-0"
+                aria-hidden="true"
+              />
+            )}
+            <span>{feedback.text}</span>
+          </div>
+          {feedback.calendarNotice && (
+            <div className="flex flex-wrap items-center gap-2 border-t border-emerald-500/20 pt-2 text-[11px] text-blue-200">
+              <Calendar className="h-3.5 w-3.5 shrink-0 text-blue-300" aria-hidden="true" />
+              <span data-testid="purchase-calendar-status">{feedback.calendarNotice}</span>
+              {feedback.calendarLink && (
+                <a
+                  href={feedback.calendarLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-md border border-blue-400/40 bg-blue-500/15 px-2 py-0.5 font-semibold text-blue-200 hover:bg-blue-500/25"
+                >
+                  Ver evento
+                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                </a>
+              )}
+              {feedback.needsCalendarAuth &&
+                pendingCalendarBatch &&
+                onConnectGoogleCalendar && (
+                  <button
+                    type="button"
+                    data-testid="btn-retry-purchase-calendar"
+                    onClick={() => void handleRetryPendingCalendarBatch()}
+                    className="inline-flex items-center gap-1 rounded-md border border-blue-400/50 bg-blue-600/25 px-2.5 py-1 font-semibold text-white hover:bg-blue-600/40"
+                  >
+                    Conectar Google y Agendar
+                  </button>
+                )}
+            </div>
           )}
-          <span>{feedback.text}</span>
         </div>
       )}
 
@@ -666,6 +867,34 @@ export function PurchasesView({
                       Fondo Reinversión ({formatUSD(state.funds.growthReinvestment)})
                     </option>
                   </select>
+                </div>
+
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <label
+                    htmlFor="batch-arrival-date"
+                    className="flex items-center gap-1.5 text-xs font-medium text-slate-300"
+                  >
+                    <Calendar className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
+                    Fecha estimada de llegada (Agenda evento en Google Calendar)
+                  </label>
+                  <div className="mt-1.5 flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <input
+                      id="batch-arrival-date"
+                      data-testid="batch-estimated-arrival-date"
+                      type="date"
+                      value={estimatedArrivalDate}
+                      onChange={(e) => {
+                        setEstimatedArrivalDate(e.target.value);
+                        setFeedback(null);
+                      }}
+                      className="font-mono-num w-full sm:w-56 min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <span className="text-[11px] text-slate-400">
+                      {estimatedArrivalDate
+                        ? `Se creará un recordatorio automático en Google Calendar el ${estimatedArrivalDate} a las 9:00 AM.`
+                        : 'Opcional: si seleccionas fecha, se agendará automáticamente la llegada del lote.'}
+                    </span>
+                  </div>
                 </div>
               </div>
             </section>
@@ -834,6 +1063,60 @@ export function PurchasesView({
                         />
                       </div>
                     ))}
+                  </div>
+                </div>
+
+                {/* Foto opcional para el catálogo público (URL / Drive / Móvil) */}
+                <div className="rounded-xl border border-slate-800 bg-[#080E1C] p-3.5">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex-1 min-w-0">
+                      <label
+                        htmlFor="purchase-catalog-photo"
+                        className="flex items-center gap-1.5 text-xs font-medium text-slate-300"
+                      >
+                        <Camera className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
+                        Foto para Catálogo Público (opcional · URL, Google Drive o galería)
+                      </label>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                        <input
+                          id="purchase-catalog-photo"
+                          data-testid="purchase-catalog-photo-input"
+                          type="url"
+                          value={itemPhotoInput}
+                          onChange={(e) => setItemPhotoInput(e.target.value)}
+                          placeholder={
+                            existingCatalogPhoto
+                              ? 'Ya tiene foto guardada (pega otro enlace para reemplazar)'
+                              : 'https://drive.google.com/file/d/... o sube desde tu móvil'
+                          }
+                          className="min-w-[220px] flex-1 min-h-[40px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                        />
+                        <label className="inline-flex min-h-[40px] cursor-pointer items-center gap-1.5 rounded-lg border border-slate-700 bg-[#0D1526] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-800 hover:text-white">
+                          <Upload className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
+                          {photoUploading ? 'Procesando...' : 'Subir Foto'}
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) => void handlePurchasePhotoUpload(e)}
+                            className="sr-only"
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    {(itemPhotoInput.trim() || existingCatalogPhoto) && (
+                      <div className="h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-slate-700 bg-[#070D19]">
+                        <img
+                          src={
+                            normalizeCatalogImageUrl(itemPhotoInput) ||
+                            existingCatalogPhoto
+                          }
+                          alt="Vista previa modelo"
+                          referrerPolicy="no-referrer"
+                          className="h-full w-full object-cover"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1127,6 +1410,26 @@ export function PurchasesView({
                         <h3 className="text-base font-semibold text-white">
                           {batch.referenceName}
                         </h3>
+
+                        {batch.estimatedArrivalDate && (
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-blue-300">
+                            <Calendar className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                            <span className="font-mono-num">
+                              Llegada est.: {batch.estimatedArrivalDate}
+                            </span>
+                            {batch.calendarEventLink && (
+                              <a
+                                href={batch.calendarEventLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 rounded border border-blue-500/35 bg-blue-500/10 px-1.5 py-0.5 text-[11px] font-medium text-blue-200 hover:bg-blue-500/20"
+                              >
+                                Google Calendar
+                                <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
+                              </a>
+                            )}
+                          </div>
+                        )}
 
                         <p className="text-xs text-slate-400">
                           {batch.orderedTotalUnits} prendas en camino · Fábrica{' '}

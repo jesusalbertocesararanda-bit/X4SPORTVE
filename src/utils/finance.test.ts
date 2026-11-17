@@ -1250,5 +1250,259 @@ test('processReturnOrExchange handles upgrades (+diff), even swaps (0 diff), and
   assert.equal(getCashBackedFundsSummary(state).isStrictlyCashBacked, true);
 });
 
+test('CROSS-MODULE STRESS AUDIT: Landed Cost import -> 3-layer FIFO consumption -> multi-item mixed payment sale -> credit/abono -> exact 4-layer matrix -> Caja Chica expense', () => {
+  // 0. Start clean with known cash ($500.00) and BCV rate (46.50 Bs) / USDT rate (54.20 Bs)
+  let state = createInitialState();
+  const capRes = registerCapitalInjection(state, {
+    contributor: 'Auditoría',
+    concept: 'Capital Stress Audit',
+    amount: 364.81,
+    destination: 'cashOnly',
+  });
+  assert.equal(capRes.ok, true);
+  state = capRes.state;
+  assert.equal(state.cashOnHand, 500);
+
+  const rateRes = updateExchangeRates(state, 46.5, 54.2, 'manual');
+  assert.equal(rateRes.ok, true);
+  state = rateRes.state;
+
+  // 1. Seed 2 earlier chronological FIFO batches on Real Madrid Local 25/26 (Player M)
+  // Batch A (2026-09-01): 2 uds @ $5.50
+  const o1 = createImportOrder(state, {
+    referenceName: 'Lote Septiembre A',
+    shippingType: 'Aéreo',
+    entryDate: '2026-08-20',
+    totalFreightCost: 0,
+    fundingSource: 'cashOnHand',
+    items: [
+      {
+        team: 'Real Madrid',
+        model: 'Real Madrid Local 25/26',
+        version: 'Player',
+        size: 'M',
+        quantity: 2,
+        factoryUnitCost: 5.5,
+        salePrice: 30,
+      },
+    ],
+  });
+  assert.equal(o1.ok, true);
+  const r1 = receiveImportBatch(o1.state, {
+    batchId: o1.createdBatch!.id,
+    receivedDate: '2026-09-01',
+    actualFreightCost: 0,
+    receivedItems: [{ itemIndex: 0, receivedQuantity: 2 }],
+  });
+  assert.equal(r1.ok, true);
+  state = r1.state; // cash: 500 - 11 = 489
+
+  // Batch B (2026-10-01): 3 uds @ $6.50
+  const o2 = createImportOrder(state, {
+    referenceName: 'Lote Octubre B',
+    shippingType: 'Aéreo',
+    entryDate: '2026-09-20',
+    totalFreightCost: 0,
+    fundingSource: 'cashOnHand',
+    items: [
+      {
+        team: 'Real Madrid',
+        model: 'Real Madrid Local 25/26',
+        version: 'Player',
+        size: 'M',
+        quantity: 3,
+        factoryUnitCost: 6.5,
+        salePrice: 30,
+      },
+    ],
+  });
+  assert.equal(o2.ok, true);
+  const r2 = receiveImportBatch(o2.state, {
+    batchId: o2.createdBatch!.id,
+    receivedDate: '2026-10-01',
+    actualFreightCost: 0,
+    receivedItems: [{ itemIndex: 0, receivedQuantity: 3 }],
+  });
+  assert.equal(r2.ok, true);
+  state = r2.state; // cash: 489 - 19.50 = 469.50
+
+  // 2. Two-stage Import Order with prorated freight & freight variance (+$4.00 real freight)
+  // Ordered: 4x Real Madrid Player M (@ $6.00 factory) + 4x Argentina Local Fans L (@ $5.00 factory) = 8 uds, factory $44, est freight $12 -> est landed $56
+  const orderRes = createImportOrder(state, {
+    referenceName: 'Import Stress #1',
+    shippingType: 'Aéreo',
+    entryDate: '2026-10-15',
+    estimatedArrivalDate: '2026-10-30',
+    totalFreightCost: 12,
+    fundingSource: 'cashOnHand',
+    items: [
+      {
+        team: 'Real Madrid',
+        model: 'Real Madrid Local 25/26',
+        version: 'Player',
+        size: 'M',
+        quantity: 4,
+        factoryUnitCost: 6,
+        salePrice: 30,
+      },
+      {
+        team: 'Selecciones',
+        model: 'Argentina Local 25/26',
+        version: 'Fans',
+        size: 'L',
+        quantity: 4,
+        factoryUnitCost: 5,
+        salePrice: 25,
+      },
+    ],
+  });
+  assert.equal(orderRes.ok, true);
+  state = orderRes.state;
+  const transitBatch = orderRes.createdBatch!;
+  assert.equal(transitBatch.status, 'EN TRÁNSITO');
+  assert.equal(state.cashOnHand, 413.5); // 469.50 - 56.00
+
+  // Receive batch with actual freight = $16.00 (+$4.00 variance) -> $2.00/ud freight prorated across 8 uds
+  // Real Madrid Player M Batch C landed = $6.00 + $2.00 = $8.00/ud
+  // Argentina Fans L Batch 1 landed = $5.00 + $2.00 = $7.00/ud
+  const recvRes = receiveImportBatch(state, {
+    batchId: transitBatch.id,
+    receivedDate: '2026-11-01',
+    actualFreightCost: 16,
+    receivedItems: [
+      { itemIndex: 0, receivedQuantity: 4 },
+      { itemIndex: 1, receivedQuantity: 4 },
+    ],
+  });
+  assert.equal(recvRes.ok, true);
+  state = recvRes.state;
+  assert.equal(state.cashOnHand, 409.5); // 413.50 - 4.00 freight variance
+
+  const rmaSku = state.inventory.find(
+    (i) => i.model === 'Real Madrid Local 25/26' && i.version === 'Player' && i.size === 'M',
+  )!;
+  const argSku = state.inventory.find(
+    (i) => i.model === 'Argentina Local 25/26' && i.version === 'Fans' && i.size === 'L',
+  )!;
+  assert.equal(rmaSku.stock, 9); // 2 + 3 + 4
+  assert.equal(rmaSku.fifoBatches.length, 3);
+  assert.equal(rmaSku.fifoBatches[2].unitCost, 8);
+  assert.equal(argSku.stock, 4);
+  assert.equal(argSku.cogs, 7);
+
+  // 3. Multi-Item Sale crossing ALL 3 FIFO layers on Real Madrid (6 uds: 2@$5.50 + 3@$6.50 + 1@$8.00 = $38.50 COGS)
+  //    + 2x Argentina Fans L (@ $7.00 = $14.00 COGS)
+  //    Total COGS = $52.50; Total Gross = (6 * $30) + (2 * $25) = $230.00
+  //    Mixed payment across ALL 4 methods:
+  //      Efectivo ($) = $50.00
+  //      Binance USDT = $80.00
+  //      Zelle = $53.50
+  //      Pago Móvil / Bs = $46.50 (46.50 * 46.50 = 2162.25 Bs)
+  //      Sum = $230.00 exact
+  const saleRes = registerMultiItemSale(state, {
+    items: [
+      { skuId: rmaSku.id, quantity: 6, unitPrice: 30 },
+      { skuId: argSku.id, quantity: 2, unitPrice: 25 },
+    ],
+    customerName: 'Andrés Mendoza',
+    customerPhone: '0414-5550199',
+    seller: 'Jesús',
+    paymentStatus: 'Cobrado',
+    paymentMethod: 'Pago Mixto',
+    paymentSplits: [
+      { method: 'Efectivo ($)', amountUsd: 50 },
+      { method: 'Binance USDT', amountUsd: 80 },
+      { method: 'Zelle', amountUsd: 53.5 },
+      { method: 'Pago Móvil / Bs', amountUsd: 46.5 },
+    ],
+  });
+  assert.equal(saleRes.ok, true);
+  state = saleRes.state;
+  const recordedSale = state.sales[0];
+
+  assert.equal(recordedSale.finalPrice, 230);
+  const computedLinesCogs = round2(
+    (recordedSale.items ?? []).reduce((s, l) => s + l.totalLineCogs, 0),
+  );
+  assert.equal(computedLinesCogs, 52.5);
+  assert.equal(recordedSale.items?.[0].fifoConsumed?.length, 3);
+  assert.deepEqual(
+    recordedSale.items?.[0].fifoConsumed?.map((c) => [c.quantity, c.unitCost]),
+    [
+      [2, 5.5],
+      [3, 6.5],
+      [1, 8],
+    ],
+  );
+  assert.equal(recordedSale.bcvEquivalent, round2(46.5 * 46.5)); // 2162.25 Bs
+  assert.equal(recordedSale.paymentSplits?.length, 4);
+  assert.equal(state.cashOnHand, round2(409.5 + 230)); // 639.50
+
+  // Check FIFO remaining stock & active unit cost after crossing 3 layers
+  const updatedRma = state.inventory.find((i) => i.id === rmaSku.id)!;
+  assert.equal(updatedRma.stock, 3); // 9 - 6
+  assert.equal(updatedRma.cogs, 8); // remaining units are strictly from Batch C ($8.00)
+
+  // Verify 4-Layer Matrix exact dollar split on $230.00 gross & $52.50 COGS:
+  // Layer 1 (Reposición COGS 100%): $52.50
+  // Layer 2 (Comisión 4% sobre $230.00): $9.20 -> Jesús
+  // Net Profit = 230 - 52.50 - 9.20 = $168.30
+  // Layer 3 (Operativo 10% de $168.30): $16.83
+  // Remainder = 168.30 - 16.83 = $151.47
+  // Layer 4: Growth 80% = 121.18, Dividends 20% = 30.29 (Jesús 53.65%=16.25, Josué 40.43%=12.25, Gabriel=1.79)
+  assert.equal(recordedSale.breakdown.layer1CostRecovery, 52.5);
+  assert.equal(recordedSale.breakdown.layer2Commission, 9.2);
+  assert.equal(recordedSale.breakdown.netProfit, 168.3);
+  assert.equal(recordedSale.breakdown.layer3OperatingFund, 16.83);
+  assert.equal(recordedSale.breakdown.remainingNetProfit, 151.47);
+  assert.equal(recordedSale.breakdown.layer4GrowthReinvestment, 121.18);
+  assert.equal(recordedSale.breakdown.layer4TotalDividends, 30.29);
+  assert.equal(recordedSale.breakdown.partnerSplits.Jesús, 16.25);
+  assert.equal(recordedSale.breakdown.partnerSplits.Josué, 12.25);
+  assert.equal(recordedSale.breakdown.partnerSplits.Gabriel, 1.79);
+
+  // 4. Credit Sale (Pendiente) + Partial Abono -> updates receivables & cashOnHand cleanly
+  const creditRes = registerMultiItemSale(state, {
+    items: [{ skuId: argSku.id, quantity: 1, unitPrice: 25 }],
+    customerName: 'Carlos Crédito',
+    seller: 'Josué',
+    paymentStatus: 'Pendiente',
+    paymentMethod: 'Efectivo ($)',
+  });
+  assert.equal(creditRes.ok, true);
+  state = creditRes.state;
+  const cashBeforeAbono = state.cashOnHand; // unchanged on Pendiente: 639.50
+  const newRec = state.receivables.find((r) => r.debtor === 'Carlos Crédito')!;
+  assert.equal(newRec.amount, 25);
+
+  const abonoRes = collectReceivable(state, newRec.id, 'Zelle', 15);
+  assert.equal(abonoRes.ok, true);
+  state = abonoRes.state;
+  assert.equal(state.cashOnHand, round2(cashBeforeAbono + 15)); // 654.50
+  assert.equal(
+    state.receivables.find((r) => r.id === newRec.id)?.amount,
+    10,
+  );
+
+  // 5. Caja Chica (Petty Cash) quick expense -> deducts cashOnHand cleanly WITHOUT altering FIFO inventory
+  const stockSnapshotBeforeExpense = getTotalUnits(state);
+  const cogsSnapshotBeforeExpense = getTotalInventoryCostValue(state);
+  const pettyRes = registerOperatingExpense(state, {
+    concept: 'Delivery motorizado Express Caracas',
+    category: 'Gastos de Logística/Empaque (bolsas, etiquetas)',
+    amount: 5.5,
+    source: 'cashOnHand',
+    paymentMethod: 'Efectivo ($)',
+  });
+  assert.equal(pettyRes.ok, true);
+  state = pettyRes.state;
+
+  assert.equal(state.cashOnHand, round2(654.5 - 5.5)); // 649.00
+  assert.equal(getTotalUnits(state), stockSnapshotBeforeExpense);
+  assert.equal(getTotalInventoryCostValue(state), cogsSnapshotBeforeExpense);
+  assert.equal(getCashBackedFundsSummary(state).isStrictlyCashBacked, true);
+  assert.ok(getTotalAllocatedFunds(state.funds) <= state.cashOnHand + 0.01);
+});
+
 
 

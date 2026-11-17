@@ -160,6 +160,7 @@ export function createInitialState(): AppState {
       reinvestedFromDividendsTotal: 0,
     },
     movements: [],
+    catalogEnabled: true,
   };
 }
 

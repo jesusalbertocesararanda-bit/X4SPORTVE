@@ -60,6 +60,38 @@ const PAYMENT_METHODS: SinglePaymentMethod[] = [
 ];
 const CONTRIBUTOR_PRESETS = ['Jesús', 'Josué', 'Gabriel', 'Capital Externo'];
 
+const PETTY_CASH_QUICK_PRESETS: Array<{
+  label: string;
+  concept: string;
+  category: ExpenseCategory;
+  source: 'operatingFund' | 'cashOnHand';
+}> = [
+  {
+    label: 'Delivery local',
+    concept: 'Delivery local de pedido',
+    category: 'Gastos de Logística/Empaque (bolsas, etiquetas)',
+    source: 'cashOnHand',
+  },
+  {
+    label: 'Bolsas y empaques',
+    concept: 'Bolsas y empaques',
+    category: 'Gastos de Logística/Empaque (bolsas, etiquetas)',
+    source: 'cashOnHand',
+  },
+  {
+    label: 'Papelería / Etiquetas',
+    concept: 'Papelería y etiquetas',
+    category: 'Gastos de Logística/Empaque (bolsas, etiquetas)',
+    source: 'cashOnHand',
+  },
+  {
+    label: 'Publicidad / Ads',
+    concept: 'Publicidad Instagram / Meta Ads',
+    category: 'Gastos de Comercialización/Publicidad',
+    source: 'operatingFund',
+  },
+];
+
 export function FinanceView({
   state,
   onCollectReceivable,
@@ -710,10 +742,16 @@ export function FinanceView({
               Gastos Operativos (Caja Chica)
             </h2>
             <p className="mt-0.5 text-xs text-slate-400">
-              Registra pagos de publicidad, empaque, envíos o gastos diarios descontándolos de caja o del Fondo Operativo (10%).
+              Registra gastos menores (delivery, papelería, empaques) o publicidad descontándolos del efectivo físico de caja o Fondo Operativo sin alterar el inventario.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono-num text-xs text-slate-300">
+            <span>
+              Caja física:{' '}
+              <strong className="text-emerald-300">
+                {formatUSDT(state.cashOnHand)}
+              </strong>
+            </span>
             <span>
               Total gastos:{' '}
               <strong
@@ -735,6 +773,29 @@ export function FinanceView({
               </strong>
             </span>
           </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-medium text-slate-400">
+            Atajos Caja Chica:
+          </span>
+          {PETTY_CASH_QUICK_PRESETS.map((preset) => (
+            <button
+              key={preset.label}
+              type="button"
+              data-testid={`petty-cash-preset-${preset.label}`}
+              onClick={() => {
+                setExpenseCategory(preset.category);
+                setExpenseConcept(preset.concept);
+                setExpenseSource(preset.source);
+                setExpenseMethod('Efectivo ($)');
+                setFeedback(null);
+              }}
+              className="min-h-[32px] rounded-lg border border-slate-700 bg-[#080E1C] px-2.5 py-1 text-[11px] font-semibold text-slate-200 transition-colors hover:border-blue-500/50 hover:bg-blue-600/20 hover:text-white"
+            >
+              + {preset.label}
+            </button>
+          ))}
         </div>
 
         <form
