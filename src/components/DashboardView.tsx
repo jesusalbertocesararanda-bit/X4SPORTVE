@@ -16,6 +16,7 @@ import {
 interface DashboardViewProps {
   state: AppState;
   rateSync: RateSyncInfo;
+  lowStockThreshold?: number;
   onSyncRatesFromApi: () => Promise<{ ok: boolean; error?: string }>;
   onUpdateRates: (bcv: number, usdt: number) => { ok: boolean; error?: string };
   onNavigate: (tab: TabId) => void;
@@ -24,6 +25,7 @@ interface DashboardViewProps {
 export function DashboardView({
   state,
   rateSync,
+  lowStockThreshold = 2,
   onSyncRatesFromApi,
   onUpdateRates,
   onNavigate,
@@ -44,7 +46,7 @@ export function DashboardView({
   const totalReceivables = getTotalReceivables(state);
   const totalUnits = getTotalUnits(state);
   const inventoryValue = getTotalInventoryCostValue(state);
-  const lowStockItems = getLowStockItems(state, 4);
+  const lowStockItems = getLowStockItems(state, lowStockThreshold);
 
   const spreadPct =
     state.exchangeRates.bcv > 0
@@ -380,7 +382,8 @@ export function DashboardView({
                 Alertas Automáticas de Stock Bajo
               </h2>
               <p className="mt-0.5 text-xs text-slate-400">
-                SKUs con inventario menor a 5 unidades que requieren reposición.
+                SKUs con inventario de {lowStockThreshold}{' '}
+                {lowStockThreshold === 1 ? 'unidad' : 'unidades'} o menos que requieren reposición.
               </p>
             </div>
             <button
@@ -398,7 +401,8 @@ export function DashboardView({
                 Bodega saludable
               </p>
               <p className="mt-1 text-xs text-slate-400">
-                Todos los modelos tienen 5 o más unidades disponibles.
+                Todos los modelos tienen más de {lowStockThreshold}{' '}
+                {lowStockThreshold === 1 ? 'unidad' : 'unidades'} disponibles.
               </p>
             </div>
           ) : (

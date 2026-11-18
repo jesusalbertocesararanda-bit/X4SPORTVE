@@ -19,8 +19,10 @@ import {
 } from 'lucide-react';
 import type {
   AppState,
+  BrandIdentityConfig,
   JerseySize,
   JerseyVersion,
+  MatrixConfigParams,
   PaymentMethod,
   PaymentSplit,
   PaymentStatus,
@@ -36,6 +38,7 @@ import type {
 import {
   calculateDiscountedUnitPrice,
   calculateFourLayerMatrixConsolidated,
+  DEFAULT_GENERAL_CONFIG,
   formatUSD,
   formatVES,
   normalizeVersionDisplay,
@@ -64,6 +67,9 @@ import { GoogleCalendarBanner } from './GoogleCalendarBanner';
 
 interface SalesViewProps {
   state: AppState;
+  activeSection?: 'registrar' | 'historial';
+  matrixParams?: MatrixConfigParams;
+  brandIdentity?: BrandIdentityConfig;
   calendarAuth?: GoogleCalendarAuthState;
   onConnectGoogleCalendar?: () => Promise<boolean>;
   onDisconnectGoogleCalendar?: () => Promise<void>;
@@ -115,6 +121,9 @@ const INITIAL_MIXED_SPLITS: Record<SinglePaymentMethod, string> = {
 
 export function SalesView({
   state,
+  activeSection,
+  matrixParams,
+  brandIdentity,
   calendarAuth,
   onConnectGoogleCalendar,
   onDisconnectGoogleCalendar,
@@ -123,6 +132,8 @@ export function SalesView({
   onRegisterMultiSale,
   onSaveCustomerProfile,
 }: SalesViewProps) {
+  const effectiveMatrixParams = matrixParams ?? DEFAULT_GENERAL_CONFIG.matrixParams;
+  const remainingProfitPct = round2(100 - effectiveMatrixParams.operatingFundPct);
   const [cart, setCart] = useState<CartLine[]>([]);
   const [modelSearch, setModelSearch] = useState<string>('');
   const [selectedSkuId, setSelectedSkuId] = useState<string>('');
@@ -341,18 +352,35 @@ export function SalesView({
     };
   }, [cart, state.inventory]);
 
+  useEffect(() => {
+    if (!activeSection) return;
+    const targetId =
+      activeSection === 'historial' ? 'recent-sales-heading' : 'add-item-heading';
+    const raf = window.requestAnimationFrame(() => {
+      const el = document.getElementById(targetId);
+      if (el && activeSection === 'historial') {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else if (activeSection === 'registrar') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [activeSection]);
+
   const liveBreakdown = useMemo(() => {
     if (cart.length === 0 || cartFifoSimulation.totalAmount <= 0) return null;
     return calculateFourLayerMatrixConsolidated(
       cartFifoSimulation.totalAmount,
       cartFifoSimulation.totalBaseCost,
       seller,
+      effectiveMatrixParams,
     );
   }, [
     cart.length,
     cartFifoSimulation.totalAmount,
     cartFifoSimulation.totalBaseCost,
     seller,
+    effectiveMatrixParams,
   ]);
 
   const handleSelectModelCard = (skuId: string) => {
@@ -547,6 +575,7 @@ export function SalesView({
       const dataUrl = await renderSaleReceiptJpgDataUrl(
         sale,
         state.exchangeRates.bcv,
+        brandIdentity,
       );
       setReceiptPreview({ sale, dataUrl });
       if (autoDownload) {
@@ -1873,7 +1902,10 @@ export function SalesView({
                 <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
                   <span className="text-slate-300">
                     2. Comisión Venta Directa (
-                    {seller === 'Sin Vendedor' ? '0%' : '4%'})
+                    {seller === 'Sin Vendedor'
+                      ? '0%'
+                      : `${effectiveMatrixParams.commissionPct}%`}
+                    )
                   </span>
                   <span className="font-mono-num font-semibold text-white">
                     {formatUSD(liveBreakdown.layer2Commission)}
@@ -1889,7 +1921,7 @@ export function SalesView({
 
                 <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
                   <span className="text-slate-300">
-                    3. Fondo Operativo y Publicidad (10%)
+                    3. Fondo Operativo y Publicidad ({effectiveMatrixParams.operatingFundPct}%)
                   </span>
                   <span className="font-mono-num font-semibold text-white">
                     {formatUSD(liveBreakdown.layer3OperatingFund)}
@@ -1899,7 +1931,7 @@ export function SalesView({
                 <div className="space-y-2 pt-1">
                   <div className="flex items-center justify-between">
                     <span className="text-slate-300">
-                      4a. Reinversión Crecimiento (80% de 90%)
+                      4a. Reinversión Crecimiento ({effectiveMatrixParams.growthReinvestmentPct}% de {remainingProfitPct}%)
                     </span>
                     <span className="font-mono-num font-semibold text-emerald-400">
                       {formatUSD(liveBreakdown.layer4GrowthReinvestment)}
@@ -1908,7 +1940,7 @@ export function SalesView({
 
                   <div className="flex items-center justify-between">
                     <span className="text-slate-300">
-                      4b. Reparto Dividendos (20% de 90%)
+                      4b. Reparto Dividendos ({effectiveMatrixParams.dividendsPct}% de {remainingProfitPct}%)
                     </span>
                     <span className="font-mono-num font-semibold text-white">
                       {formatUSD(liveBreakdown.layer4TotalDividends)}
@@ -1917,19 +1949,25 @@ export function SalesView({
 
                   <div className="mt-2 grid grid-cols-3 gap-2 rounded-lg bg-[#080E1C] p-3 text-xs">
                     <div>
-                      <span className="block text-slate-400">Jesús (53.65%)</span>
+                      <span className="block text-slate-400">
+                        Jesús ({effectiveMatrixParams.partnerSharesPct.Jesús}%)
+                      </span>
                       <span className="font-mono-num mt-0.5 block font-semibold text-white">
                         {formatUSD(liveBreakdown.partnerSplits.Jesús)}
                       </span>
                     </div>
                     <div>
-                      <span className="block text-slate-400">Josué (40.43%)</span>
+                      <span className="block text-slate-400">
+                        Josué ({effectiveMatrixParams.partnerSharesPct.Josué}%)
+                      </span>
                       <span className="font-mono-num mt-0.5 block font-semibold text-white">
                         {formatUSD(liveBreakdown.partnerSplits.Josué)}
                       </span>
                     </div>
                     <div>
-                      <span className="block text-slate-400">Gabriel (5.92%)</span>
+                      <span className="block text-slate-400">
+                        Gabriel ({effectiveMatrixParams.partnerSharesPct.Gabriel}%)
+                      </span>
                       <span className="font-mono-num mt-0.5 block font-semibold text-white">
                         {formatUSD(liveBreakdown.partnerSplits.Gabriel)}
                       </span>

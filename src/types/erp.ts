@@ -10,7 +10,60 @@ export type TabId =
   | 'reportes'
   | 'cargas'
   | 'historial-precios'
-  | 'catalogo';
+  | 'catalogo'
+  | 'configuracion';
+
+export type SubModuleId =
+  | 'dashboard'
+  | 'ventas-registrar'
+  | 'ventas-historial'
+  | 'ventas-devoluciones'
+  | 'ventas-cxc'
+  | 'compras-registrar'
+  | 'compras-transito'
+  | 'compras-precios'
+  | 'inventario-stock'
+  | 'inventario-auditoria'
+  | 'inventario-ajustes'
+  | 'finanzas-matriz'
+  | 'finanzas-gastos'
+  | 'finanzas-socios'
+  | 'reportes'
+  | 'estadisticas'
+  | 'cargas'
+  | 'catalogo'
+  | 'configuracion';
+
+export interface MatrixConfigParams {
+  commissionPct: number; // Default 4%
+  operatingFundPct: number; // Default 10%
+  growthReinvestmentPct: number; // Default 80% of remainder
+  dividendsPct: number; // Default 20% of remainder
+  partnerSharesPct: Record<PartnerName, number>; // Default { Jesús: 53.65, Josué: 40.43, Gabriel: 5.92 }
+}
+
+export interface AlertThresholdsConfig {
+  lowStockThreshold: number; // Default 2
+  receivableOverdueDays: number; // Default 30
+  maritimeTransitMaxDays: number; // Default 80
+  airTransitMaxDays: number; // Default 15
+}
+
+export interface BrandIdentityConfig {
+  storeName: string; // Default 'X4SPORT'
+  storeSubtitle: string; // Default 'INDUMENTARIA DEPORTIVA'
+  storeLocation: string; // Default 'Guacara, Edo. Carabobo · Venezuela'
+  logoUrl: string; // Default '/assets/aistudio/image_992adf2a.jpg'
+  invoiceFooterMessage: string; // Default 'Gracias por comprar en X4SPORT'
+}
+
+export interface GeneralConfig {
+  matrixParams: MatrixConfigParams;
+  alertThresholds: AlertThresholdsConfig;
+  brandIdentity: BrandIdentityConfig;
+  updatedAt?: string;
+  updatedBy?: string;
+}
 
 export type TeamCategory = string;
 

@@ -11,8 +11,10 @@ import {
   applyAuditAdjustments,
   calculateDiscountedUnitPrice,
   calculateFourLayerMatrix,
+  calculateFourLayerMatrixConsolidated,
   collectReceivable,
   createImportOrder,
+  DEFAULT_GENERAL_CONFIG,
   EXPENSE_CATEGORIES,
   extractTeamFromModel,
   getActiveOperationalAlerts,
@@ -30,6 +32,7 @@ import {
   migrateLegacyInventoryItems,
   migrateLegacyStateToCurrent,
   normalizeAppState,
+  normalizeGeneralConfig,
   processReturnOrExchange,
   receiveImportBatch,
   reconcileCashOnHand,
@@ -1503,6 +1506,150 @@ test('CROSS-MODULE STRESS AUDIT: Landed Cost import -> 3-layer FIFO consumption 
   assert.equal(getCashBackedFundsSummary(state).isStrictlyCashBacked, true);
   assert.ok(getTotalAllocatedFunds(state.funds) <= state.cashOnHand + 0.01);
 });
+
+test('normalizeGeneralConfig enforces defaults, numeric bounds, and 100% partner share invariant', () => {
+  const defaults = normalizeGeneralConfig(null);
+  assert.deepEqual(defaults, DEFAULT_GENERAL_CONFIG);
+  assert.equal(defaults.alertThresholds.lowStockThreshold, 2);
+  assert.equal(defaults.alertThresholds.receivableOverdueDays, 30);
+  assert.equal(defaults.alertThresholds.maritimeTransitMaxDays, 80);
+  assert.equal(defaults.alertThresholds.airTransitMaxDays, 15);
+
+  const normalized = normalizeGeneralConfig({
+    matrixParams: {
+      commissionPct: 5,
+      operatingFundPct: 12,
+      growthReinvestmentPct: 75,
+      dividendsPct: 10,
+      partnerSharesPct: { Jesús: 50, Josué: 30, Gabriel: 20 },
+    },
+    alertThresholds: {
+      lowStockThreshold: 3,
+      receivableOverdueDays: 45,
+      maritimeTransitMaxDays: 90,
+      airTransitMaxDays: 20,
+    },
+    brandIdentity: {
+      storeName: '  X4SPORT PRO  ',
+      logoUrl: 'https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/view?usp=sharing',
+    },
+  });
+
+  assert.equal(normalized.matrixParams.commissionPct, 5);
+  assert.equal(normalized.matrixParams.operatingFundPct, 12);
+  assert.equal(normalized.matrixParams.growthReinvestmentPct, 75);
+  assert.equal(normalized.matrixParams.dividendsPct, 25);
+  assert.deepEqual(normalized.matrixParams.partnerSharesPct, {
+    Jesús: 50,
+    Josué: 30,
+    Gabriel: 20,
+  });
+  assert.equal(normalized.alertThresholds.lowStockThreshold, 3);
+  assert.equal(normalized.alertThresholds.receivableOverdueDays, 45);
+  assert.equal(normalized.brandIdentity.storeName, 'X4SPORT PRO');
+
+  const badPartnerSum = normalizeGeneralConfig({
+    matrixParams: {
+      commissionPct: 4,
+      operatingFundPct: 10,
+      growthReinvestmentPct: 80,
+      dividendsPct: 20,
+      partnerSharesPct: { Jesús: 60, Josué: 40, Gabriel: 20 },
+    },
+  });
+  assert.deepEqual(
+    badPartnerSum.matrixParams.partnerSharesPct,
+    DEFAULT_GENERAL_CONFIG.matrixParams.partnerSharesPct,
+  );
+});
+
+test('calculateFourLayerMatrixConsolidated preserves baseline defaults and respects custom MatrixConfigParams', () => {
+  const defaultBreakdown = calculateFourLayerMatrixConsolidated(100, 20, 'Jesús');
+  const explicitDefaultBreakdown = calculateFourLayerMatrixConsolidated(
+    100,
+    20,
+    'Jesús',
+    DEFAULT_GENERAL_CONFIG.matrixParams,
+  );
+  assert.deepEqual(defaultBreakdown, explicitDefaultBreakdown);
+
+  const customBreakdown = calculateFourLayerMatrixConsolidated(100, 20, 'Jesús', {
+    commissionPct: 5,
+    operatingFundPct: 10,
+    growthReinvestmentPct: 70,
+    dividendsPct: 30,
+    partnerSharesPct: { Jesús: 50, Josué: 30, Gabriel: 20 },
+  });
+
+  assert.equal(customBreakdown.layer1CostRecovery, 20);
+  assert.equal(customBreakdown.layer2Commission, 5);
+  assert.equal(customBreakdown.netProfit, 75);
+  assert.equal(customBreakdown.layer3OperatingFund, 7.5);
+  assert.equal(customBreakdown.layer4GrowthReinvestment, 47.25);
+  assert.equal(customBreakdown.layer4TotalDividends, 20.25);
+  assert.equal(customBreakdown.partnerSplits.Jesús, 10.13);
+  assert.equal(customBreakdown.partnerSplits.Josué, 6.08);
+  assert.equal(customBreakdown.partnerSplits.Gabriel, 4.04);
+});
+
+test('getActiveOperationalAlerts evaluates configurable thresholds and overdue receivables (>30d) with targetSubModule routing', () => {
+  const state = createInitialState();
+  state.inventory.push(
+    {
+      id: 'sku-low-2',
+      team: 'Barcelona',
+      model: 'Barcelona Visita 25/26',
+      version: 'Fans',
+      size: 'M',
+      stock: 2,
+      cogs: 7,
+      salePrice: 30,
+      fifoBatches: [],
+    },
+    {
+      id: 'sku-ok-4',
+      team: 'Real Madrid',
+      model: 'Real Madrid Local 25/26',
+      version: 'Fans',
+      size: 'L',
+      stock: 4,
+      cogs: 7,
+      salePrice: 30,
+      fifoBatches: [],
+    },
+  );
+  state.receivables = [
+    {
+      id: 'rec-overdue',
+      debtor: 'Cliente Moroso',
+      amount: 55,
+      createdAt: '2026-09-01T10:00:00.000Z',
+    },
+    {
+      id: 'rec-fresh',
+      debtor: 'Cliente Reciente',
+      amount: 30,
+      createdAt: '2026-10-20T10:00:00.000Z',
+    },
+  ];
+
+  const alerts = getActiveOperationalAlerts(
+    state,
+    '2026-10-25',
+    DEFAULT_GENERAL_CONFIG.alertThresholds,
+  );
+
+  const lowAlerts = alerts.filter((a) => a.kind === 'low_stock');
+  assert.equal(lowAlerts.length, 1);
+  assert.ok(lowAlerts[0].title.includes('Barcelona Visita 25/26'));
+  assert.equal(lowAlerts[0].targetSubModule, 'inventario-stock');
+
+  const cxcAlerts = alerts.filter((a) => a.kind === 'overdue_receivable');
+  assert.equal(cxcAlerts.length, 1);
+  assert.ok(cxcAlerts[0].title.includes('Cliente Moroso'));
+  assert.equal(cxcAlerts[0].targetSubModule, 'ventas-cxc');
+});
+
 
 
 

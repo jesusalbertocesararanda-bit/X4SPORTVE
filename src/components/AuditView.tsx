@@ -21,6 +21,7 @@ import {
 
 interface AuditViewProps {
   state: AppState;
+  activeSection?: 'auditoria' | 'ajustes';
   onApplyAuditAdjustments: (
     input: ApplyAuditAdjustmentsInput,
   ) => { ok: boolean; error?: string };
@@ -56,6 +57,7 @@ interface PendingSkuChange {
 
 export function AuditView({
   state,
+  activeSection,
   onApplyAuditAdjustments,
   onAdjustInventoryCount,
 }: AuditViewProps) {
@@ -63,7 +65,18 @@ export function AuditView({
   const [searchQuery, setSearchQuery] = useState('');
   const [teamFilter, setTeamFilter] = useState<'Todos' | TeamCategory>('Todos');
 
-  const [showManualModal, setShowManualModal] = useState(false);
+  const [showManualModal, setShowManualModal] = useState(
+    activeSection === 'ajustes',
+  );
+
+  useEffect(() => {
+    if (activeSection === 'ajustes') {
+      setManualFeedback(null);
+      setShowManualModal(true);
+    } else if (activeSection === 'auditoria') {
+      setShowManualModal(false);
+    }
+  }, [activeSection]);
   const [manualSkuId, setManualSkuId] = useState(state.inventory[0]?.id ?? '');
   const [manualAdjType, setManualAdjType] = useState<'entrada' | 'salida'>('entrada');
   const [manualQtyInput, setManualQtyInput] = useState('');

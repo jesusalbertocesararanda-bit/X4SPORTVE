@@ -1,5 +1,6 @@
-import type { SaleRecord } from '../types/erp';
-import { formatUSD, formatVES, round2 } from './finance';
+import type { BrandIdentityConfig, SaleRecord } from '../types/erp';
+import { DEFAULT_GENERAL_CONFIG, formatUSD, formatVES, round2 } from './finance';
+import { convertGoogleDriveUrlToDirect } from './publicCatalog';
 
 export const X4SPORT_LOGO_SRC = '/assets/aistudio/image_992adf2a.jpg';
 
@@ -67,7 +68,19 @@ function wrapLines(
 export async function renderSaleReceiptJpgDataUrl(
   sale: SaleRecord,
   bcvRate: number,
+  brandConfig?: BrandIdentityConfig,
 ): Promise<string> {
+  const brand = brandConfig ?? DEFAULT_GENERAL_CONFIG.brandIdentity;
+  const resolvedLogoSrc = brand.logoUrl?.trim()
+    ? convertGoogleDriveUrlToDirect(brand.logoUrl.trim())
+    : X4SPORT_LOGO_SRC;
+  const storeName = brand.storeName?.trim() || 'X4SPORT';
+  const storeSubtitle = brand.storeSubtitle?.trim() || 'INDUMENTARIA DEPORTIVA';
+  const storeLocation =
+    brand.storeLocation?.trim() || 'Guacara, Edo. Carabobo · Venezuela';
+  const footerMessage =
+    brand.invoiceFooterMessage?.trim() || 'Gracias por comprar en X4SPORT';
+
   const lineItems =
     sale.items && sale.items.length > 0
       ? sale.items
@@ -129,7 +142,7 @@ export async function renderSaleReceiptJpgDataUrl(
   ctx.fillRect(pad, pad + headerH - 4, cardW, 4);
 
   // Logo Image / Fallback Emblem
-  const logoImg = await loadLogoImage(X4SPORT_LOGO_SRC);
+  const logoImg = await loadLogoImage(resolvedLogoSrc);
   const logoSize = 112;
   const logoX = pad + 32;
   const logoY = pad + 36;
@@ -148,7 +161,11 @@ export async function renderSaleReceiptJpgDataUrl(
     ctx.font = 'bold 34px system-ui, -apple-system, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('X4', logoX + logoSize / 2, logoY + logoSize / 2);
+    ctx.fillText(
+      storeName.slice(0, 2).toUpperCase() || 'X4',
+      logoX + logoSize / 2,
+      logoY + logoSize / 2,
+    );
   }
   ctx.restore();
 
@@ -162,15 +179,15 @@ export async function renderSaleReceiptJpgDataUrl(
   ctx.textBaseline = 'alphabetic';
   ctx.fillStyle = '#FFFFFF';
   ctx.font = '800 34px system-ui, -apple-system, sans-serif';
-  ctx.fillText('X4SPORT', logoX + logoSize + 24, pad + 78);
+  ctx.fillText(storeName, logoX + logoSize + 24, pad + 78);
 
   ctx.fillStyle = '#60A5FA';
   ctx.font = '600 17px system-ui, -apple-system, sans-serif';
-  ctx.fillText('INDUMENTARIA DEPORTIVA', logoX + logoSize + 24, pad + 108);
+  ctx.fillText(storeSubtitle, logoX + logoSize + 24, pad + 108);
 
   ctx.fillStyle = '#94A3B8';
   ctx.font = '500 15px system-ui, -apple-system, sans-serif';
-  ctx.fillText('Guacara, Edo. Carabobo · Venezuela', logoX + logoSize + 24, pad + 136);
+  ctx.fillText(storeLocation, logoX + logoSize + 24, pad + 136);
 
   // Invoice Number Badge on Right
   const invoiceCode = sale.invoiceNumber || 'FAC-0001';
@@ -375,12 +392,12 @@ export async function renderSaleReceiptJpgDataUrl(
   ctx.textAlign = 'center';
   ctx.fillStyle = '#FFFFFF';
   ctx.font = '700 22px system-ui, -apple-system, sans-serif';
-  ctx.fillText('Gracias por comprar en X4SPORT', width / 2, footerY - 12);
+  ctx.fillText(footerMessage, width / 2, footerY - 12);
 
   ctx.fillStyle = '#64748B';
   ctx.font = '500 13px system-ui, -apple-system, sans-serif';
   ctx.fillText(
-    `Factura ${invoiceCode} · Guacara, Venezuela · Comprobante válido para cambios y devoluciones`,
+    `Factura ${invoiceCode} · ${storeLocation} · Comprobante válido para cambios y devoluciones`,
     width / 2,
     footerY + 16,
   );

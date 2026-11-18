@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { getDefaultSalePrice } from '../data/initialState';
 import type {
+  AlertThresholdsConfig,
   AppState,
   JerseySize,
   JerseyVersion,
@@ -52,6 +53,8 @@ import {
 
 interface PurchasesViewProps {
   state: AppState;
+  activeSection?: 'create' | 'transit';
+  alertThresholds?: AlertThresholdsConfig;
   calendarAuth?: GoogleCalendarAuthState;
   onConnectGoogleCalendar?: () => Promise<boolean>;
   onDisconnectGoogleCalendar?: () => Promise<void>;
@@ -96,6 +99,8 @@ const EMPTY_SIZE_MATRIX: Record<JerseySize, string> = {
 
 export function PurchasesView({
   state,
+  activeSection,
+  alertThresholds,
   calendarAuth,
   onConnectGoogleCalendar,
   onDisconnectGoogleCalendar,
@@ -107,7 +112,13 @@ export function PurchasesView({
 }: PurchasesViewProps) {
   const todayStr = new Date().toISOString().slice(0, 10);
 
-  const [subView, setSubView] = useState<PurchasesSubView>('all');
+  const [subView, setSubView] = useState<PurchasesSubView>(activeSection ?? 'all');
+
+  useEffect(() => {
+    if (activeSection) {
+      setSubView(activeSection);
+    }
+  }, [activeSection]);
 
   // Etapa 1: Batch header fields
   const [entryDate, setEntryDate] = useState(todayStr);
@@ -1351,7 +1362,11 @@ export function PurchasesView({
           ) : (
             <div className="mt-5 divide-y divide-slate-800">
               {transitBatches.map((batch) => {
-                const transitAlert = getTransitAlertStatus(batch);
+                const transitAlert = getTransitAlertStatus(
+                  batch,
+                  undefined,
+                  alertThresholds,
+                );
                 return (
                   <article
                     key={batch.id}

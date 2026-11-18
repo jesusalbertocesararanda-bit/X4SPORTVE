@@ -3,11 +3,13 @@ import {
   createEmptyCleanState,
   createInitialState,
 } from '../data/initialState';
-import type { AppState, ExchangeRates } from '../types/erp';
+import type { AppState, ExchangeRates, GeneralConfig } from '../types/erp';
 import {
+  DEFAULT_GENERAL_CONFIG,
   isAccidentalDemoCatalogOnly,
   migrateLegacyStateToCurrent,
   normalizeAppState,
+  normalizeGeneralConfig,
   recoverStartupErpState,
   sanitizeForFirebase,
 } from './finance';
@@ -25,7 +27,9 @@ export const firebaseConfig = {
 } as const;
 
 export const RTDB_ERP_PATH = 'x4sport/erpState';
+export const RTDB_CONFIG_PATH = 'configuracion/general';
 export const LOCAL_BACKUP_KEY = 'x4sport_erp_backup_v2';
+export const LOCAL_CONFIG_BACKUP_KEY = 'x4sport_general_config_v1';
 
 interface FirebaseDataSnapshot {
   exists: () => boolean;
@@ -356,4 +360,95 @@ export function formatFirebaseError(err: unknown): string {
   }
   return msg || 'Error de conexión con Firebase Realtime Database.';
 }
+
+export function readLocalGeneralConfigBackup(): GeneralConfig {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return DEFAULT_GENERAL_CONFIG;
+  }
+  try {
+    const raw = window.localStorage.getItem(LOCAL_CONFIG_BACKUP_KEY);
+    if (!raw) return DEFAULT_GENERAL_CONFIG;
+    return normalizeGeneralConfig(JSON.parse(raw));
+  } catch {
+    return DEFAULT_GENERAL_CONFIG;
+  }
+}
+
+export function saveLocalGeneralConfigBackup(config: GeneralConfig): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(
+      LOCAL_CONFIG_BACKUP_KEY,
+      JSON.stringify(sanitizeForFirebase(config)),
+    );
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+/**
+ * Suscripción única en tiempo real a `configuracion/general` en Firebase RTDB.
+ * Debe montarse una sola vez en App.tsx para evitar listeners duplicados.
+ */
+export function subscribeGeneralConfig(
+  onConfig: (config: GeneralConfig) => void,
+): () => void {
+  let active = true;
+  let receivedRealtime = false;
+
+  const restUrl = `${firebaseConfig.databaseURL}/${RTDB_CONFIG_PATH}.json`;
+  void fetch(restUrl, { cache: 'no-store' })
+    .then(async (resp) => {
+      if (!active || receivedRealtime || !resp.ok) return;
+      const data: unknown = await resp.json();
+      if (!active || receivedRealtime) return;
+      if (data !== null && data !== undefined) {
+        const normalized = normalizeGeneralConfig(data);
+        saveLocalGeneralConfigBackup(normalized);
+        onConfig(normalized);
+      }
+    })
+    .catch(() => {
+      // Fallback handled by onValue listener or local backup
+    });
+
+  try {
+    const db = getFirebaseDatabase();
+    const configRef = db.ref(RTDB_CONFIG_PATH);
+
+    const listener = configRef.on(
+      'value',
+      (snapshot) => {
+        if (!active) return;
+        receivedRealtime = true;
+        if (!snapshot.exists() || snapshot.val() === null) {
+          return;
+        }
+        const normalized = normalizeGeneralConfig(snapshot.val());
+        saveLocalGeneralConfigBackup(normalized);
+        onConfig(normalized);
+      },
+      () => {
+        // Keep active local config cleanly if permission/network error occurs
+      },
+    );
+
+    return () => {
+      active = false;
+      configRef.off('value', listener);
+    };
+  } catch {
+    return () => {
+      active = false;
+    };
+  }
+}
+
+export async function writeGeneralConfig(config: GeneralConfig): Promise<void> {
+  const clean = normalizeGeneralConfig(config);
+  saveLocalGeneralConfigBackup(clean);
+  const db = getFirebaseDatabase();
+  await db.ref(RTDB_CONFIG_PATH).set(sanitizeForFirebase(clean));
+}
+
 

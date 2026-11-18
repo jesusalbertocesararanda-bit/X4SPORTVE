@@ -14,6 +14,7 @@ import type {
   AppState,
   CapitalInjectionDestination,
   ExpenseCategory,
+  MatrixConfigParams,
   PartnerName,
   PaymentMethod,
   SinglePaymentMethod,
@@ -24,6 +25,7 @@ import type {
   RegisterOperatingExpenseInput,
 } from '../utils/finance';
 import {
+  DEFAULT_GENERAL_CONFIG,
   EXPENSE_CATEGORIES,
   formatUSD,
   formatUSDT,
@@ -35,6 +37,8 @@ import {
 
 interface FinanceViewProps {
   state: AppState;
+  activeSection?: 'matriz' | 'gastos' | 'socios' | 'cxc';
+  matrixParams?: MatrixConfigParams;
   onCollectReceivable: (
     receivableId: string,
     paymentMethod: PaymentMethod,
@@ -94,6 +98,8 @@ const PETTY_CASH_QUICK_PRESETS: Array<{
 
 export function FinanceView({
   state,
+  activeSection,
+  matrixParams,
   onCollectReceivable,
   onReinvestDividends,
   onRegisterOperatingExpense,
@@ -101,6 +107,28 @@ export function FinanceView({
   onReconcileCash,
   onResetDemoData,
 }: FinanceViewProps) {
+  const effectiveMatrixParams = matrixParams ?? DEFAULT_GENERAL_CONFIG.matrixParams;
+
+  useEffect(() => {
+    if (!activeSection) return;
+    const sectionHeadingMap: Record<NonNullable<FinanceViewProps['activeSection']>, string> = {
+      matriz: 'funds-heading',
+      gastos: 'petty-cash-heading',
+      socios: 'dividends-heading',
+      cxc: 'receivables-heading',
+    };
+    const targetId = sectionHeadingMap[activeSection];
+    const raf = window.requestAnimationFrame(() => {
+      if (activeSection === 'matriz') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      const el = document.getElementById(targetId);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [activeSection]);
+
   const [collectionMethod, setCollectionMethod] =
     useState<SinglePaymentMethod>('Efectivo ($)');
   const [abonoTargetId, setAbonoTargetId] = useState<string | null>(null);
@@ -473,7 +501,7 @@ export function FinanceView({
               {formatUSD(state.funds.operatingAndAds)}
             </p>
             <p className="mt-2 text-xs text-slate-400">
-              10% de la utilidad neta
+              {effectiveMatrixParams.operatingFundPct}% de la utilidad neta
             </p>
           </article>
 
@@ -488,7 +516,7 @@ export function FinanceView({
               {formatUSD(state.funds.growthReinvestment)}
             </p>
             <p className="mt-2 text-xs text-slate-400">
-              80% remanente +{' '}
+              {effectiveMatrixParams.growthReinvestmentPct}% remanente +{' '}
               <span className="font-mono-num text-slate-300">
                 {formatUSD(state.funds.reinvestedFromDividendsTotal)}
               </span>{' '}
@@ -511,7 +539,7 @@ export function FinanceView({
               Reparto de Dividendos por Socio
             </h2>
             <p className="mt-0.5 text-xs text-slate-400">
-              20% de la utilidad neta remanente. Puedes reinvertir el saldo directamente al Fondo de Crecimiento.
+              {effectiveMatrixParams.dividendsPct}% de la utilidad neta remanente. Puedes reinvertir el saldo directamente al Fondo de Crecimiento.
             </p>
           </div>
 
@@ -528,7 +556,10 @@ export function FinanceView({
               <tbody className="divide-y divide-slate-800/70">
                 {PARTNERS.map((partner) => {
                   const amount = state.funds.dividendsByPartner[partner];
-                  const sharePct = (PARTNER_SHARES[partner] * 100).toFixed(2);
+                  const sharePct = (
+                    effectiveMatrixParams.partnerSharesPct[partner] ??
+                    PARTNER_SHARES[partner] * 100
+                  ).toFixed(2);
                   return (
                     <tr key={partner}>
                       <td className="py-3.5 font-semibold text-white">
@@ -767,7 +798,7 @@ export function FinanceView({
               </strong>
             </span>
             <span>
-              Fondo Operativo 10%:{' '}
+              Fondo Operativo {effectiveMatrixParams.operatingFundPct}%:{' '}
               <strong className="text-blue-300">
                 {formatUSDT(state.funds.operatingAndAds)}
               </strong>
@@ -889,7 +920,9 @@ export function FinanceView({
               }
               className="mt-1.5 w-full min-h-[44px] rounded-lg border border-slate-700 bg-[#070D19] px-3 py-2 text-xs text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
-              <option value="operatingFund">Fondo Operativo 10%</option>
+              <option value="operatingFund">
+                Fondo Operativo {effectiveMatrixParams.operatingFundPct}%
+              </option>
               <option value="cashOnHand">Caja General</option>
             </select>
           </div>
@@ -988,7 +1021,7 @@ export function FinanceView({
                   <p className="text-slate-400">
                     {exp.paymentMethod} ·{' '}
                     {exp.source === 'operatingFund'
-                      ? 'Fondo Operativo 10%'
+                      ? `Fondo Operativo ${effectiveMatrixParams.operatingFundPct}%`
                       : 'Caja General'}
                     {exp.deficitCoveredByFunds && exp.deficitCoveredByFunds > 0
                       ? ` · Déficit proporcional (-${formatUSD(

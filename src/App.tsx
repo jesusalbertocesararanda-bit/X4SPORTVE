@@ -4,6 +4,7 @@ import { AppHeader } from './components/AppHeader';
 import { AuditView } from './components/AuditView';
 import { BulkImportView } from './components/BulkImportView';
 import { CatalogAdminView } from './components/CatalogAdminView';
+import { ConfigView } from './components/ConfigView';
 import { DashboardView } from './components/DashboardView';
 import { ExcelImportModal } from './components/ExcelImportModal';
 import { FinanceView } from './components/FinanceView';
@@ -14,7 +15,6 @@ import { PurchasesView } from './components/PurchasesView';
 import { ReportsView } from './components/ReportsView';
 import { ReturnsView } from './components/ReturnsView';
 import { SalesView } from './components/SalesView';
-import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
 import { StatsView } from './components/StatsView';
 import { SupplierPriceHistoryView } from './components/SupplierPriceHistoryView';
@@ -31,10 +31,12 @@ import {
 import type {
   AppState,
   AuthorizedUserRecord,
+  GeneralConfig,
   PartnerName,
   PaymentMethod,
   PurchaseBatchRecord,
   SaleRecord,
+  SubModuleId,
   TabId,
 } from './types/erp';
 import { fetchVenezuelaExchangeRates } from './utils/exchangeRatesApi';
@@ -46,6 +48,7 @@ import {
   collectReceivable,
   createImportOrder,
   getActiveOperationalAlerts,
+  normalizeGeneralConfig,
   processReturnOrExchange,
   receiveImportBatch,
   reconcileCashOnHand,
@@ -69,6 +72,7 @@ import type {
   ActionResult,
   AdjustInventoryCountInput,
   ApplyAuditAdjustmentsInput,
+  OperationalAlert,
   ProcessReturnExchangeInput,
   ReceiveImportBatchInput,
   ReconcileCashInput,
@@ -85,35 +89,29 @@ import {
 import {
   formatFirebaseError,
   purgeAllDataInFirebase,
+  readLocalGeneralConfigBackup,
   readLocalStorageRecoveryCandidates,
   resetBaselineStateInFirebase,
   resetErpStateInFirebase,
+  saveLocalGeneralConfigBackup,
   saveLocalStateBackup,
   subscribeErpState,
+  subscribeGeneralConfig,
   writeErpState,
   writeExchangeRatesOnly,
+  writeGeneralConfig,
 } from './utils/firebaseRealtime';
+import {
+  getBreadcrumbParts,
+  SUBMODULE_ROUTES,
+  tabToDefaultSubModule,
+} from './utils/navigation';
 import { isPublicCatalogModeFromLocation } from './utils/publicCatalog';
 
 export interface RateSyncInfo {
   status: 'idle' | 'loading' | 'synced' | 'error';
   message?: string;
 }
-
-const MODULE_TITLES: Record<TabId, string> = {
-  dashboard: 'Panel Principal',
-  ventas: 'Ventas y Facturación Digital',
-  devoluciones: 'Devoluciones y Cambios',
-  compras: 'Compras y Recepción de Mercancía',
-  inventario: 'Inventario y Stock Base',
-  auditoria: 'Auditoría Física de Inventario',
-  finanzas: 'Finanzas, Caja y Cuentas por Cobrar',
-  estadisticas: 'Estadísticas y Comisiones',
-  reportes: 'Reportes Consolidados Avanzados',
-  cargas: 'Cargas Masivas de Datos (.xlsx)',
-  'historial-precios': 'Historial de Precios y Proveedores',
-  catalogo: 'Catálogo Público para Clientes',
-};
 
 export default function App() {
   const [state, setState] = useState<AppState>(() => {
@@ -123,13 +121,19 @@ export default function App() {
     );
     return initialRecovered;
   });
+  const [generalConfig, setGeneralConfig] = useState<GeneralConfig>(() =>
+    readLocalGeneralConfigBackup(),
+  );
   const [isHydratingDb, setIsHydratingDb] = useState(true);
   const [dbError, setDbError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<TabId>('dashboard');
+  const [activeSubModule, setActiveSubModule] =
+    useState<SubModuleId>('dashboard');
+  const activeTab: TabId = SUBMODULE_ROUTES[activeSubModule].tab;
+  const breadcrumb = getBreadcrumbParts(activeSubModule);
+
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [rateSync, setRateSync] = useState<RateSyncInfo>({ status: 'idle' });
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
   const [isPublicCatalogRoute, setIsPublicCatalogRoute] = useState<boolean>(() =>
     isPublicCatalogModeFromLocation(),
@@ -169,6 +173,7 @@ export default function App() {
   const handleLogout = useCallback(() => {
     storeActiveUser(null);
     setCurrentUser(null);
+    setActiveSubModule('dashboard');
   }, []);
 
   const handleUpdateAuthorizedUsers = useCallback((users: AuthorizedUserRecord[]) => {
@@ -186,15 +191,23 @@ export default function App() {
     });
   }, []);
 
-  const handleOpenSettings = useCallback(() => {
-    if (!canAccessConfiguration(currentUser)) {
-      setRestrictedToast(
-        `Acceso restringido: Solo Administrador Principal (${MAIN_ADMIN_EMAIL})`,
-      );
+  const handleSelectSubModule = useCallback((subModule: SubModuleId) => {
+    setActiveSubModule(subModule);
+  }, []);
+
+  const handleNavigateTab = useCallback((tab: TabId) => {
+    setActiveSubModule(tabToDefaultSubModule(tab));
+  }, []);
+
+  const handleNavigateAlert = useCallback((alert: OperationalAlert) => {
+    if (alert.targetSubModule) {
+      setActiveSubModule(alert.targetSubModule);
       return;
     }
-    setIsSettingsOpen(true);
-  }, [currentUser]);
+    if (alert.targetTab) {
+      setActiveSubModule(tabToDefaultSubModule(alert.targetTab));
+    }
+  }, []);
 
   const checkAdminPermission = useCallback((actionName: string): boolean => {
     if (isAdminUser(currentUser)) return true;
@@ -306,7 +319,7 @@ export default function App() {
 
   // Suscripción en tiempo real (onValue) a Firebase RTDB con blindaje anti-borrado de localStorage
   useEffect(() => {
-    const unsubscribe = subscribeErpState(
+    const unsubscribeState = subscribeErpState(
       (remoteState) => {
         setState(remoteState);
         setIsHydratingDb(false);
@@ -318,10 +331,37 @@ export default function App() {
       },
     );
 
+    const unsubscribeConfig = subscribeGeneralConfig((remoteConfig) => {
+      setGeneralConfig(remoteConfig);
+    });
+
     return () => {
-      unsubscribe();
+      unsubscribeState();
+      unsubscribeConfig();
     };
   }, []);
+
+  const handleSaveGeneralConfig = useCallback(
+    async (nextConfig: GeneralConfig): Promise<void> => {
+      if (!canAccessConfiguration(currentUser)) {
+        throw new Error(
+          `Acceso restringido: Solo Administrador Principal (${MAIN_ADMIN_EMAIL})`,
+        );
+      }
+      const normalized = normalizeGeneralConfig(nextConfig);
+      setGeneralConfig(normalized);
+      saveLocalGeneralConfigBackup(normalized);
+      try {
+        await writeGeneralConfig(normalized);
+        setDbError(null);
+      } catch (err: unknown) {
+        const message = formatFirebaseError(err);
+        setDbError(message);
+        throw new Error(message);
+      }
+    },
+    [currentUser],
+  );
 
   const commitState = useCallback(
     (
@@ -470,8 +510,13 @@ export default function App() {
   }, [isHydratingDb]);
 
   const activeAlerts = useMemo(
-    () => getActiveOperationalAlerts(state),
-    [state],
+    () =>
+      getActiveOperationalAlerts(
+        state,
+        undefined,
+        generalConfig.alertThresholds,
+      ),
+    [state, generalConfig.alertThresholds],
   );
 
   const effectiveSeenAlertIds = useMemo(() => {
@@ -530,7 +575,9 @@ export default function App() {
   };
 
   const handleRegisterMultiSale = (input: RegisterMultiSaleInput) =>
-    commitState(registerMultiItemSale(state, input));
+    commitState(
+      registerMultiItemSale(state, input, generalConfig.matrixParams),
+    );
 
   const handleSaveCustomerProfile = (input: UpsertCustomerInput) =>
     commitState(upsertCustomerProfile(state, input));
@@ -852,28 +899,30 @@ export default function App() {
       )}
 
       <Sidebar
-        activeTab={activeTab}
+        activeSubModule={activeSubModule}
         isCollapsed={sidebarCollapsed}
         mobileOpen={mobileSidebarOpen}
+        currentUser={currentUser}
+        isSynced={dbError === null && !isHydratingDb}
+        storeName={generalConfig.brandIdentity.storeName}
         onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
         onCloseMobile={() => setMobileSidebarOpen(false)}
-        onSelectTab={setActiveTab}
-        onOpenSettings={handleOpenSettings}
+        onSelectSubModule={handleSelectSubModule}
+        onLogout={handleLogout}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <AppHeader
-          moduleTitle={MODULE_TITLES[activeTab]}
-          currentUser={currentUser}
-          onLogout={handleLogout}
-          isSynced={dbError === null && !isHydratingDb}
+          moduleLabel={breadcrumb.moduleLabel}
+          subModuleLabel={breadcrumb.subModuleLabel}
           alerts={activeAlerts}
+          alertThresholds={generalConfig.alertThresholds}
           seenAlertIds={effectiveSeenAlertIds}
           onToggleAlertSeen={handleToggleAlertSeen}
           onMarkAllAlertsSeen={handleMarkAllAlertsSeen}
           onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
-          onStartSale={() => setActiveTab('ventas')}
-          onNavigateTab={setActiveTab}
+          onStartSale={() => setActiveSubModule('ventas-registrar')}
+          onNavigateAlert={handleNavigateAlert}
         />
 
         <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
@@ -903,15 +952,23 @@ export default function App() {
                 <DashboardView
                   state={state}
                   rateSync={rateSync}
+                  lowStockThreshold={generalConfig.alertThresholds.lowStockThreshold}
                   onSyncRatesFromApi={syncRatesFromApi}
                   onUpdateRates={handleUpdateRates}
-                  onNavigate={setActiveTab}
+                  onNavigate={handleNavigateTab}
                 />
               )}
 
               {activeTab === 'ventas' && (
                 <SalesView
                   state={state}
+                  activeSection={
+                    activeSubModule === 'ventas-historial'
+                      ? 'historial'
+                      : 'registrar'
+                  }
+                  matrixParams={generalConfig.matrixParams}
+                  brandIdentity={generalConfig.brandIdentity}
                   calendarAuth={calendarAuth}
                   onConnectGoogleCalendar={handleConnectGoogleCalendar}
                   onDisconnectGoogleCalendar={handleDisconnectGoogleCalendar}
@@ -938,6 +995,11 @@ export default function App() {
               {activeTab === 'auditoria' && (
                 <AuditView
                   state={state}
+                  activeSection={
+                    activeSubModule === 'inventario-ajustes'
+                      ? 'ajustes'
+                      : 'auditoria'
+                  }
                   onApplyAuditAdjustments={handleApplyAuditAdjustments}
                   onAdjustInventoryCount={handleAdjustInventoryCount}
                 />
@@ -946,6 +1008,12 @@ export default function App() {
               {activeTab === 'compras' && (
                 <PurchasesView
                   state={state}
+                  activeSection={
+                    activeSubModule === 'compras-transito'
+                      ? 'transit'
+                      : 'create'
+                  }
+                  alertThresholds={generalConfig.alertThresholds}
                   calendarAuth={calendarAuth}
                   onConnectGoogleCalendar={handleConnectGoogleCalendar}
                   onDisconnectGoogleCalendar={handleDisconnectGoogleCalendar}
@@ -962,6 +1030,16 @@ export default function App() {
               {activeTab === 'finanzas' && (
                 <FinanceView
                   state={state}
+                  activeSection={
+                    activeSubModule === 'ventas-cxc'
+                      ? 'cxc'
+                      : activeSubModule === 'finanzas-gastos'
+                        ? 'gastos'
+                        : activeSubModule === 'finanzas-socios'
+                          ? 'socios'
+                          : 'matriz'
+                  }
+                  matrixParams={generalConfig.matrixParams}
                   onCollectReceivable={handleCollectReceivable}
                   onReinvestDividends={handleReinvestDividends}
                   onRegisterOperatingExpense={handleRegisterOperatingExpense}
@@ -992,28 +1070,30 @@ export default function App() {
                   onOpenCatalogPreview={() => setIsCatalogPreview(true)}
                 />
               )}
+              {activeTab === 'configuracion' && (
+                <ConfigView
+                  currentUser={currentUser}
+                  state={state}
+                  generalConfig={generalConfig}
+                  rateSync={rateSync}
+                  calendarAuth={calendarAuth}
+                  onSaveGeneralConfig={handleSaveGeneralConfig}
+                  onConnectGoogleCalendar={handleConnectGoogleCalendar}
+                  onDisconnectGoogleCalendar={handleDisconnectGoogleCalendar}
+                  onToggleCatalogEnabled={handleToggleCatalogEnabled}
+                  onOpenCatalogAdmin={() => setActiveSubModule('catalogo')}
+                  onBackToDashboard={() => setActiveSubModule('dashboard')}
+                  onOpenExcelImport={() => setIsExcelModalOpen(true)}
+                  onSyncRatesFromApi={syncRatesFromApi}
+                  onUpdateRates={handleUpdateRates}
+                  onResetDemoData={handleResetDemoData}
+                  onUpdateAuthorizedUsers={handleUpdateAuthorizedUsers}
+                />
+              )}
             </>
           )}
         </main>
       </div>
-
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        currentUser={currentUser}
-        state={state}
-        rateSync={rateSync}
-        calendarAuth={calendarAuth}
-        onConnectGoogleCalendar={handleConnectGoogleCalendar}
-        onDisconnectGoogleCalendar={handleDisconnectGoogleCalendar}
-        onToggleCatalogEnabled={handleToggleCatalogEnabled}
-        onOpenCatalogAdmin={() => setActiveTab('catalogo')}
-        onClose={() => setIsSettingsOpen(false)}
-        onOpenExcelImport={() => setIsExcelModalOpen(true)}
-        onSyncRatesFromApi={syncRatesFromApi}
-        onUpdateRates={handleUpdateRates}
-        onResetDemoData={handleResetDemoData}
-        onUpdateAuthorizedUsers={handleUpdateAuthorizedUsers}
-      />
 
       <ExcelImportModal
         isOpen={isExcelModalOpen}

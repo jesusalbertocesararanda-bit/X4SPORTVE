@@ -4,49 +4,77 @@ import {
   Bell,
   Check,
   CheckCheck,
+  ChevronRight,
   Clock,
-  LogOut,
+  CreditCard,
   Menu,
   Package,
   RotateCcw,
   ShoppingBag,
   X,
 } from 'lucide-react';
-import type { TabId } from '../types/erp';
+import type { AlertThresholdsConfig, SubModuleId } from '../types/erp';
 import type { OperationalAlert } from '../utils/finance';
 import { getUnseenAlertCount } from '../utils/notifications';
 
-import type { ERPUser } from '../utils/auth';
-
 interface AppHeaderProps {
-  moduleTitle: string;
-  currentUser: ERPUser | null;
-  onLogout: () => void;
-  isSynced: boolean;
+  moduleLabel: string;
+  subModuleLabel?: string;
   alerts: OperationalAlert[];
+  alertThresholds: AlertThresholdsConfig;
   seenAlertIds: string[];
   onToggleAlertSeen: (alertId: string) => void;
   onMarkAllAlertsSeen: () => void;
   onOpenMobileSidebar: () => void;
   onStartSale: () => void;
-  onNavigateTab: (tab: TabId) => void;
+  onNavigateAlert: (alert: OperationalAlert) => void;
 }
 
 export function AppHeader({
-  moduleTitle,
-  currentUser,
-  onLogout,
-  isSynced,
+  moduleLabel,
+  subModuleLabel,
   alerts,
+  alertThresholds,
   seenAlertIds,
   onToggleAlertSeen,
   onMarkAllAlertsSeen,
   onOpenMobileSidebar,
   onStartSale,
-  onNavigateTab,
+  onNavigateAlert,
 }: AppHeaderProps) {
   const [notifOpen, setNotifOpen] = useState(false);
+  const [isVisible, setIsVisible] = useState(true);
+  const lastScrollYRef = useRef(0);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-hide topbar on scroll down, show immediately on scroll up
+  useEffect(() => {
+    const handleScroll = () => {
+      if (notifOpen) {
+        setIsVisible(true);
+        return;
+      }
+      const currentY = window.scrollY;
+      const lastY = lastScrollYRef.current;
+
+      if (currentY <= 40) {
+        setIsVisible(true);
+      } else if (currentY > lastY + 8) {
+        setIsVisible(false);
+      } else if (currentY < lastY - 8) {
+        setIsVisible(true);
+      }
+      lastScrollYRef.current = currentY;
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [notifOpen]);
+
+  // Reset visible when route changes
+  useEffect(() => {
+    setIsVisible(true);
+  }, [moduleLabel, subModuleLabel]);
 
   useEffect(() => {
     if (!notifOpen) return;
@@ -72,13 +100,28 @@ export function AppHeader({
   const seenSet = new Set(seenAlertIds);
   const unseenCount = getUnseenAlertCount(alerts, seenAlertIds);
 
+  const getAlertDestinationLabel = (alert: OperationalAlert): string => {
+    const sub: SubModuleId | undefined = alert.targetSubModule;
+    if (sub === 'ventas-cxc' || alert.kind === 'overdue_receivable') {
+      return 'Ir a Ventas > CxC';
+    }
+    if (sub === 'compras-transito' || alert.kind === 'transit_delay') {
+      return 'Ir a Compras > Pedidos en Tránsito';
+    }
+    return 'Ir a Inventario > Stock Disponible';
+  };
+
   return (
     <header
       data-testid="app-header"
-      className="sticky top-0 z-30 border-b border-slate-800/90 bg-[#080F1E]/95 backdrop-blur-md"
+      data-visible={isVisible ? 'true' : 'false'}
+      className={`sticky top-0 z-30 border-b border-slate-800/90 bg-[#080F1E]/95 backdrop-blur-md transition-transform duration-300 ${
+        isVisible ? 'translate-y-0' : '-translate-y-full'
+      }`}
     >
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6">
-        <div className="flex min-w-0 items-center gap-3">
+        {/* Izquierda: toggle móvil + breadcrumb dinámico */}
+        <div className="flex min-w-0 items-center gap-2.5">
           <button
             type="button"
             data-testid="btn-mobile-menu"
@@ -89,42 +132,35 @@ export function AppHeader({
             <Menu className="h-4 w-4" aria-hidden="true" />
           </button>
 
-          <h2
+          <nav
+            aria-label="Ruta actual"
             data-testid="header-module-title"
-            className="font-display truncate text-base font-semibold tracking-tight text-white sm:text-lg"
+            className="flex min-w-0 items-center gap-1.5 text-sm sm:text-base"
           >
-            {moduleTitle}
-          </h2>
-
-          {currentUser && (
-            <div className="flex items-center gap-2 rounded-xl border border-slate-800 bg-[#0D1526] px-2.5 py-1 text-xs text-slate-300 shrink-0">
-              <span
-                className={`flex h-2 w-2 rounded-full ${
-                  isSynced ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500 animate-ping'
-                }`}
-                title={isSynced ? 'Sincronizado en tiempo real' : 'Sincronizando...'}
-              />
-              <span className="font-medium text-white max-w-[100px] sm:max-w-none truncate">
-                {currentUser.name}
-              </span>
-              <span className="hidden md:inline text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 font-semibold">
-                {currentUser.role === 'admin' ? 'Admin' : 'Socio'}
-              </span>
-              <button
-                type="button"
-                data-testid="btn-logout"
-                onClick={onLogout}
-                title="Cerrar sesión"
-                className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg px-2.5 py-1 ml-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-              >
-                <LogOut className="h-3.5 w-3.5 text-red-400 shrink-0" aria-hidden="true" />
-                <span className="hidden sm:inline">Cerrar Sesión</span>
-              </button>
-            </div>
-          )}
+            <span
+              className={`font-display truncate tracking-tight ${
+                subModuleLabel
+                  ? 'font-medium text-slate-400'
+                  : 'font-semibold text-white'
+              }`}
+            >
+              {moduleLabel}
+            </span>
+            {subModuleLabel && (
+              <>
+                <ChevronRight
+                  className="h-4 w-4 shrink-0 text-slate-600"
+                  aria-hidden="true"
+                />
+                <span className="font-display truncate font-semibold tracking-tight text-white">
+                  {subModuleLabel}
+                </span>
+              </>
+            )}
+          </nav>
         </div>
 
-        {/* ÚNICAMENTE dos botones a la derecha: Hacer Venta y Notificaciones */}
+        {/* Derecha: ÚNICAMENTE dos botones: Nueva Venta y Notificaciones */}
         <div
           ref={popoverRef}
           className="relative flex items-center gap-2.5 shrink-0"
@@ -136,7 +172,7 @@ export function AppHeader({
             className="inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-500 active:scale-[0.98] whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
           >
             <ShoppingBag className="h-4 w-4 shrink-0" aria-hidden="true" />
-            <span>Hacer Venta</span>
+            <span>Nueva Venta</span>
           </button>
 
           <button
@@ -146,7 +182,7 @@ export function AppHeader({
             aria-haspopup="dialog"
             aria-label={
               unseenCount > 0
-                ? `Notificaciones (${unseenCount} no vistas)`
+                ? `Notificaciones (${unseenCount} no leídas)`
                 : 'Notificaciones (sin alertas pendientes)'
             }
             onClick={() => setNotifOpen((prev) => !prev)}
@@ -173,13 +209,13 @@ export function AppHeader({
               role="dialog"
               aria-label="Centro de alertas operativas"
               data-testid="notifications-popover"
-              className="absolute right-0 top-12 z-50 w-[330px] sm:w-[410px] rounded-xl border border-slate-700 bg-[#0D1526] shadow-2xl overflow-hidden"
+              className="absolute right-0 top-12 z-50 w-[330px] sm:w-[420px] rounded-xl border border-slate-700 bg-[#0D1526] shadow-2xl overflow-hidden"
             >
               <div className="flex items-start justify-between gap-2 border-b border-slate-800 px-4 py-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <h3 className="text-sm font-semibold text-white">
-                      Alertas del Sistema
+                      Notificaciones en Tiempo Real
                     </h3>
                     {alerts.length > 0 && (
                       <span
@@ -191,13 +227,16 @@ export function AppHeader({
                         }`}
                       >
                         {unseenCount > 0
-                          ? `${unseenCount} sin ver`
-                          : 'Todas vistas'}
+                          ? `${unseenCount} sin leer`
+                          : 'Todas leídas'}
                       </span>
                     )}
                   </div>
                   <p className="mt-0.5 text-[11px] text-slate-400">
-                    Stock bajo (&lt; 5 uds) y retrasos en tránsito · Tacha para marcar vista
+                    Stock (≤{alertThresholds.lowStockThreshold}), CxC (&gt;
+                    {alertThresholds.receivableOverdueDays}d) y Tránsito (M&gt;
+                    {alertThresholds.maritimeTransitMaxDays}d / A&gt;
+                    {alertThresholds.airTransitMaxDays}d)
                   </p>
                 </div>
                 <button
@@ -219,14 +258,14 @@ export function AppHeader({
                     className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold text-blue-300 transition-colors hover:bg-blue-500/15 hover:text-white"
                   >
                     <CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />
-                    Marcar todas como vistas
+                    Marcar todas como leídas
                   </button>
                 </div>
               )}
 
               {alerts.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-400">
-                  Sin alertas pendientes. Todos los modelos tienen stock ≥ 5 unidades y los envíos están dentro del plazo.
+                  Sin alertas pendientes. Stock, Cuentas por Cobrar y envíos están dentro de los umbrales configurados.
                 </div>
               ) : (
                 <ul className="max-h-80 divide-y divide-slate-800/80 overflow-y-auto">
@@ -239,19 +278,29 @@ export function AppHeader({
                         className={`flex items-start gap-2 px-3 py-2.5 transition-colors ${
                           isSeen
                             ? 'bg-[#070C17]/80 opacity-65'
-                            : 'hover:bg-slate-800/40'
+                            : 'bg-blue-950/15 hover:bg-slate-800/40'
                         }`}
                       >
                         <button
                           type="button"
                           onClick={() => {
-                            onNavigateTab(alert.targetTab);
+                            if (!isSeen) {
+                              onToggleAlertSeen(alert.id);
+                            }
+                            onNavigateAlert(alert);
                             setNotifOpen(false);
                           }}
                           className="flex min-w-0 flex-1 items-start gap-2.5 rounded-lg p-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                         >
                           {alert.kind === 'transit_delay' ? (
                             <Clock
+                              className={`mt-0.5 h-4 w-4 shrink-0 ${
+                                isSeen ? 'text-slate-500' : 'text-amber-400'
+                              }`}
+                              aria-hidden="true"
+                            />
+                          ) : alert.kind === 'overdue_receivable' ? (
+                            <CreditCard
                               className={`mt-0.5 h-4 w-4 shrink-0 ${
                                 isSeen ? 'text-slate-500' : 'text-red-400'
                               }`}
@@ -266,30 +315,28 @@ export function AppHeader({
                             />
                           )}
                           <div className="min-w-0 flex-1">
-                            <p
-                              className={`text-xs font-semibold ${
-                                isSeen
-                                  ? 'line-through text-slate-400'
-                                  : 'text-white'
-                              }`}
-                            >
-                              {alert.title}
-                            </p>
+                            <div className="flex items-center gap-1.5">
+                              {!isSeen && (
+                                <span className="h-2 w-2 rounded-full bg-blue-500 shrink-0" />
+                              )}
+                              <p
+                                className={`text-xs font-semibold truncate ${
+                                  isSeen ? 'text-slate-400' : 'text-white'
+                                }`}
+                              >
+                                {alert.title}
+                              </p>
+                            </div>
                             <p
                               className={`mt-0.5 text-[11px] ${
-                                isSeen
-                                  ? 'line-through text-slate-500'
-                                  : 'text-red-300'
+                                isSeen ? 'text-slate-500' : 'text-red-300'
                               }`}
                             >
                               {alert.description}
                             </p>
                             <span className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-blue-300">
                               <Package className="h-3 w-3" aria-hidden="true" />
-                              Ir a{' '}
-                              {alert.targetTab === 'compras'
-                                ? 'Compras'
-                                : 'Inventario'}
+                              {getAlertDestinationLabel(alert)}
                             </span>
                           </div>
                         </button>
@@ -300,8 +347,8 @@ export function AppHeader({
                           aria-pressed={isSeen}
                           aria-label={
                             isSeen
-                              ? `Desmarcar "${alert.title}" como no vista`
-                              : `Tachar "${alert.title}" y marcar como vista`
+                              ? `Marcar "${alert.title}" como no leída`
+                              : `Marcar "${alert.title}" como leída`
                           }
                           onClick={() => onToggleAlertSeen(alert.id)}
                           className={`mt-1 inline-flex min-h-[30px] shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
@@ -313,12 +360,12 @@ export function AppHeader({
                           {isSeen ? (
                             <>
                               <RotateCcw className="h-3 w-3" aria-hidden="true" />
-                              <span>Vista</span>
+                              <span>Leída</span>
                             </>
                           ) : (
                             <>
                               <Check className="h-3 w-3" aria-hidden="true" />
-                              <span>Tachar</span>
+                              <span>Leer</span>
                             </>
                           )}
                         </button>

@@ -11,6 +11,7 @@ import {
 } from '../data/initialState';
 import { getMergedAuthorizedUsers, getStoredActiveUser } from './auth';
 import type {
+  AlertThresholdsConfig,
   AppState,
   AuditMovement,
   AuthorizedUserRecord,
@@ -22,10 +23,12 @@ import type {
   FifoConsumptionDetail,
   FinancialFunds,
   FourLayerBreakdown,
+  GeneralConfig,
   InventoryAdjustmentRecord,
   InventoryItem,
   JerseySize,
   JerseyVersion,
+  MatrixConfigParams,
   OperatingExpenseRecord,
   PartnerName,
   PaymentMethod,
@@ -44,6 +47,7 @@ import type {
   SellerName,
   ShippingType,
   SinglePaymentMethod,
+  SubModuleId,
   TeamCategory,
 } from '../types/erp';
 import {
@@ -57,6 +61,171 @@ export const EXPENSE_CATEGORIES: ExpenseCategory[] = [
   'Gastos de Logística/Empaque (bolsas, etiquetas)',
   'Gastos Personales / Retiros de Socios',
 ];
+
+export const DEFAULT_GENERAL_CONFIG: GeneralConfig = {
+  matrixParams: {
+    commissionPct: 4,
+    operatingFundPct: 10,
+    growthReinvestmentPct: 80,
+    dividendsPct: 20,
+    partnerSharesPct: {
+      Jesús: 53.65,
+      Josué: 40.43,
+      Gabriel: 5.92,
+    },
+  },
+  alertThresholds: {
+    lowStockThreshold: 2,
+    receivableOverdueDays: 30,
+    maritimeTransitMaxDays: 80,
+    airTransitMaxDays: 15,
+  },
+  brandIdentity: {
+    storeName: 'X4SPORT',
+    storeSubtitle: 'INDUMENTARIA DEPORTIVA',
+    storeLocation: 'Guacara, Edo. Carabobo · Venezuela',
+    logoUrl: '/assets/aistudio/image_992adf2a.jpg',
+    invoiceFooterMessage: 'Gracias por comprar en X4SPORT',
+  },
+};
+
+export function normalizeGeneralConfig(raw: unknown): GeneralConfig {
+  const def = DEFAULT_GENERAL_CONFIG;
+  if (!raw || typeof raw !== 'object') {
+    return {
+      matrixParams: {
+        ...def.matrixParams,
+        partnerSharesPct: { ...def.matrixParams.partnerSharesPct },
+      },
+      alertThresholds: { ...def.alertThresholds },
+      brandIdentity: { ...def.brandIdentity },
+    };
+  }
+  const obj = raw as Partial<GeneralConfig>;
+  const rawMatrix = obj.matrixParams ?? ({} as Partial<MatrixConfigParams>);
+  const rawPartners =
+    rawMatrix.partnerSharesPct ??
+    ({} as Partial<Record<PartnerName, number>>);
+
+  const safeNum = (v: unknown, fallback: number, min = 0, max = 100) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= min && n <= max ? round2(n) : fallback;
+  };
+  const safeInt = (v: unknown, fallback: number, min = 0, max = 3650) => {
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
+  };
+
+  const growthPct = safeNum(
+    rawMatrix.growthReinvestmentPct,
+    def.matrixParams.growthReinvestmentPct,
+    0,
+    100,
+  );
+  const dividendsPct = round2(100 - growthPct);
+
+  const jesusPct = safeNum(
+    rawPartners.Jesús,
+    def.matrixParams.partnerSharesPct.Jesús,
+    0,
+    100,
+  );
+  const josuePct = safeNum(
+    rawPartners.Josué,
+    def.matrixParams.partnerSharesPct.Josué,
+    0,
+    100,
+  );
+  const gabrielPct = safeNum(
+    rawPartners.Gabriel,
+    def.matrixParams.partnerSharesPct.Gabriel,
+    0,
+    100,
+  );
+  const partnerSum = round2(jesusPct + josuePct + gabrielPct);
+  const partnerSharesPct =
+    Math.abs(partnerSum - 100) <= 0.05
+      ? {
+          Jesús: jesusPct,
+          Josué: josuePct,
+          Gabriel: gabrielPct,
+        }
+      : { ...def.matrixParams.partnerSharesPct };
+
+  const rawAlerts = obj.alertThresholds ?? ({} as Partial<AlertThresholdsConfig>);
+  const rawBrand = obj.brandIdentity ?? ({} as Partial<GeneralConfig['brandIdentity']>);
+
+  return {
+    matrixParams: {
+      commissionPct: safeNum(
+        rawMatrix.commissionPct,
+        def.matrixParams.commissionPct,
+        0,
+        50,
+      ),
+      operatingFundPct: safeNum(
+        rawMatrix.operatingFundPct,
+        def.matrixParams.operatingFundPct,
+        0,
+        50,
+      ),
+      growthReinvestmentPct: growthPct,
+      dividendsPct,
+      partnerSharesPct,
+    },
+    alertThresholds: {
+      lowStockThreshold: safeInt(
+        rawAlerts.lowStockThreshold,
+        def.alertThresholds.lowStockThreshold,
+        0,
+        500,
+      ),
+      receivableOverdueDays: safeInt(
+        rawAlerts.receivableOverdueDays,
+        def.alertThresholds.receivableOverdueDays,
+        1,
+        365,
+      ),
+      maritimeTransitMaxDays: safeInt(
+        rawAlerts.maritimeTransitMaxDays,
+        def.alertThresholds.maritimeTransitMaxDays,
+        1,
+        365,
+      ),
+      airTransitMaxDays: safeInt(
+        rawAlerts.airTransitMaxDays,
+        def.alertThresholds.airTransitMaxDays,
+        1,
+        365,
+      ),
+    },
+    brandIdentity: {
+      storeName:
+        typeof rawBrand.storeName === 'string' && rawBrand.storeName.trim()
+          ? rawBrand.storeName.trim()
+          : def.brandIdentity.storeName,
+      storeSubtitle:
+        typeof rawBrand.storeSubtitle === 'string' && rawBrand.storeSubtitle.trim()
+          ? rawBrand.storeSubtitle.trim()
+          : def.brandIdentity.storeSubtitle,
+      storeLocation:
+        typeof rawBrand.storeLocation === 'string' && rawBrand.storeLocation.trim()
+          ? rawBrand.storeLocation.trim()
+          : def.brandIdentity.storeLocation,
+      logoUrl:
+        typeof rawBrand.logoUrl === 'string' && rawBrand.logoUrl.trim()
+          ? rawBrand.logoUrl.trim()
+          : def.brandIdentity.logoUrl,
+      invoiceFooterMessage:
+        typeof rawBrand.invoiceFooterMessage === 'string' &&
+        rawBrand.invoiceFooterMessage.trim()
+          ? rawBrand.invoiceFooterMessage.trim()
+          : def.brandIdentity.invoiceFooterMessage,
+    },
+    updatedAt: typeof obj.updatedAt === 'string' ? obj.updatedAt : undefined,
+    updatedBy: typeof obj.updatedBy === 'string' ? obj.updatedBy : undefined,
+  };
+}
 
 export function formatInvoiceNumber(seq: number): string {
   const safe = Math.max(1, Math.floor(Number.isFinite(seq) ? seq : 1));
@@ -461,14 +630,31 @@ export function calculateFourLayerMatrixConsolidated(
   finalSalePrice: number,
   totalBaseCost: number,
   seller: SellerName,
+  matrixParams?: MatrixConfigParams,
 ): FourLayerBreakdown {
+  const commissionRate = matrixParams
+    ? Math.max(0, matrixParams.commissionPct) / 100
+    : 0.04;
+  const operatingRate = matrixParams
+    ? Math.max(0, matrixParams.operatingFundPct) / 100
+    : 0.1;
+  const growthRate = matrixParams
+    ? Math.min(1, Math.max(0, matrixParams.growthReinvestmentPct / 100))
+    : 0.8;
+  const jesusShare = matrixParams
+    ? Math.max(0, matrixParams.partnerSharesPct.Jesús) / 100
+    : PARTNER_SHARES.Jesús;
+  const josueShare = matrixParams
+    ? Math.max(0, matrixParams.partnerSharesPct.Josué) / 100
+    : PARTNER_SHARES.Josué;
+
   const grossRevenue = round2(Math.max(0, finalSalePrice));
   const rawCostRecovery = round2(Math.max(0, totalBaseCost));
 
   const layer1CostRecovery = round2(Math.min(grossRevenue, rawCostRecovery));
 
   const rawCommission =
-    seller !== 'Sin Vendedor' ? round2(grossRevenue * 0.04) : 0;
+    seller !== 'Sin Vendedor' ? round2(grossRevenue * commissionRate) : 0;
   const maxAvailableAfterCost = round2(
     Math.max(0, grossRevenue - layer1CostRecovery),
   );
@@ -478,16 +664,16 @@ export function calculateFourLayerMatrixConsolidated(
     Math.max(0, grossRevenue - layer1CostRecovery - layer2Commission),
   );
 
-  const layer3OperatingFund = round2(netProfit * 0.1);
+  const layer3OperatingFund = round2(netProfit * operatingRate);
   const remainingNetProfit = round2(netProfit - layer3OperatingFund);
 
-  const layer4GrowthReinvestment = round2(remainingNetProfit * 0.8);
+  const layer4GrowthReinvestment = round2(remainingNetProfit * growthRate);
   const layer4TotalDividends = round2(
     remainingNetProfit - layer4GrowthReinvestment,
   );
 
-  const jesus = round2(layer4TotalDividends * PARTNER_SHARES.Jesús);
-  const josue = round2(layer4TotalDividends * PARTNER_SHARES.Josué);
+  const jesus = round2(layer4TotalDividends * jesusShare);
+  const josue = round2(layer4TotalDividends * josueShare);
   const gabriel = round2(Math.max(0, layer4TotalDividends - jesus - josue));
 
   return {
@@ -512,12 +698,14 @@ export function calculateFourLayerMatrix(
   unitCogs: number,
   quantity: number,
   seller: SellerName,
+  matrixParams?: MatrixConfigParams,
 ): FourLayerBreakdown {
   const rawCostRecovery = round2(Math.max(0, unitCogs) * Math.max(0, quantity));
   return calculateFourLayerMatrixConsolidated(
     finalSalePrice,
     rawCostRecovery,
     seller,
+    matrixParams,
   );
 }
 
@@ -661,6 +849,7 @@ export function upsertCustomerProfile(
 export function registerMultiItemSale(
   state: AppState,
   input: RegisterMultiSaleInput,
+  matrixParams?: MatrixConfigParams,
 ): ActionResult {
   if (!input.items || input.items.length === 0) {
     return {
@@ -830,6 +1019,7 @@ export function registerMultiItemSale(
     totalFinalPrice,
     totalBaseCost,
     input.seller,
+    matrixParams,
   );
 
   const nextCash =
@@ -2562,8 +2752,15 @@ export interface TransitAlertStatus {
 export function getTransitAlertStatus(
   batch: PurchaseBatchRecord,
   referenceDate?: string,
+  thresholds?: Pick<
+    AlertThresholdsConfig,
+    'maritimeTransitMaxDays' | 'airTransitMaxDays'
+  >,
 ): TransitAlertStatus {
-  const thresholdDays = batch.shippingType === 'Marítimo' ? 80 : 15;
+  const thresholdDays =
+    batch.shippingType === 'Marítimo'
+      ? (thresholds?.maritimeTransitMaxDays ?? 80)
+      : (thresholds?.airTransitMaxDays ?? 15);
   if (batch.status !== 'EN TRÁNSITO') {
     return { daysInTransit: 0, thresholdDays, isDelayed: false };
   }
@@ -2687,22 +2884,31 @@ export function getInventorySizeMatrix(
 
 export interface OperationalAlert {
   id: string;
-  kind: 'low_stock' | 'transit_delay';
+  kind: 'low_stock' | 'transit_delay' | 'overdue_receivable';
   severity: 'critical' | 'warning';
   title: string;
   description: string;
-  targetTab: 'inventario' | 'compras';
+  targetTab: 'inventario' | 'compras' | 'finanzas';
+  targetSubModule?: SubModuleId;
 }
 
 export function getActiveOperationalAlerts(
   state: AppState,
   referenceDate?: string,
+  thresholds?: AlertThresholdsConfig,
 ): OperationalAlert[] {
   const alerts: OperationalAlert[] = [];
+  const refDateStr = (referenceDate ?? new Date().toISOString().slice(0, 10)).slice(
+    0,
+    10,
+  );
+  const refMs = Date.parse(`${refDateStr}T00:00:00Z`);
+  const overdueDaysLimit = thresholds?.receivableOverdueDays ?? 30;
 
+  // 1. Pedidos en tránsito retrasados (Marítimo > 80d / Aéreo > 15d o configurado)
   for (const batch of state.purchaseBatches ?? []) {
     if (batch.status !== 'EN TRÁNSITO') continue;
-    const status = getTransitAlertStatus(batch, referenceDate);
+    const status = getTransitAlertStatus(batch, referenceDate, thresholds);
     if (status.isDelayed) {
       alerts.push({
         id: `alert-transit-${batch.id}`,
@@ -2711,13 +2917,50 @@ export function getActiveOperationalAlerts(
         title: `Envío en retraso: ${batch.referenceName}`,
         description: `${batch.shippingType} · ${status.daysInTransit} días en tránsito (límite ${status.thresholdDays} días · ${batch.totalUnits} uds)`,
         targetTab: 'compras',
+        targetSubModule: 'compras-transito',
       });
     }
   }
 
-  const matrix = getInventorySizeMatrix(state.inventory, 5);
+  // 2. Cuentas por Cobrar vencidas (> 30 días o umbral configurado)
+  for (const rec of state.receivables ?? []) {
+    if (rec.amount <= 0) continue;
+    const createdStr = (rec.createdAt || refDateStr).slice(0, 10);
+    const createdMs = Date.parse(`${createdStr}T00:00:00Z`);
+    const ageDays =
+      Number.isFinite(createdMs) && Number.isFinite(refMs)
+        ? Math.max(0, Math.floor((refMs - createdMs) / (1000 * 60 * 60 * 24)))
+        : 0;
+    if (ageDays > overdueDaysLimit) {
+      alerts.push({
+        id: `alert-cxc-${rec.id}`,
+        kind: 'overdue_receivable',
+        severity: 'critical',
+        title: `CxC vencida: ${rec.debtor}`,
+        description: `${formatUSD(rec.amount)} pendiente · ${ageDays} días vencida (límite ${overdueDaysLimit}d)`,
+        targetTab: 'finanzas',
+        targetSubModule: 'ventas-cxc',
+      });
+    }
+  }
+
+  // 3. Stock bajo (umbral configurado <= lowStockThreshold o legado < 5)
+  const matrix = getInventorySizeMatrix(
+    state.inventory,
+    thresholds ? thresholds.lowStockThreshold + 1 : 5,
+  );
   for (const row of matrix) {
-    if (row.isLowStock) {
+    const hasCriticalSku = thresholds
+      ? row.items.some((item) => item.stock <= thresholds.lowStockThreshold)
+      : false;
+    if (row.isLowStock || hasCriticalSku) {
+      const limitLabel = thresholds
+        ? `<= ${thresholds.lowStockThreshold}`
+        : '< 5';
+      const criticalSizesText =
+        thresholds && row.lowSizes.length > 0 && !row.isLowStock
+          ? ` (Tallas críticas: ${row.lowSizes.join(', ')})`
+          : '';
       alerts.push({
         id: `alert-stock-${row.key}`,
         kind: 'low_stock',
@@ -2726,8 +2969,9 @@ export function getActiveOperationalAlerts(
         description:
           row.totalStock === 0
             ? 'Agotado (0 unidades totales en bodega)'
-            : `Solo ${row.totalStock} ${row.totalStock === 1 ? 'unidad' : 'unidades'} totales (< 5)`,
+            : `${row.totalStock} ${row.totalStock === 1 ? 'unidad' : 'unidades'} totales (${limitLabel})${criticalSizesText}`,
         targetTab: 'inventario',
+        targetSubModule: 'inventario-stock',
       });
     }
   }

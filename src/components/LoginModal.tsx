@@ -40,19 +40,17 @@ export function LoginModal({
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [otpSent, setOtpSent] = useState(false);
-  const [demoCodeHint, setDemoCodeHint] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
   const startFirstTimeFlow = (targetEmail: string) => {
-    const code = generateOtpCode(targetEmail);
-    setDemoCodeHint(code);
+    generateOtpCode(targetEmail);
     setTab('first-time');
     setOtpCode('');
     setNewPassword('');
     setConfirmPassword('');
     setInfoMessage(
-      'Se detectó que es tu primer ingreso al ERP. Hemos generado tu código de verificación OTP para que crees tu contraseña personal.',
+      `Se detectó tu primer ingreso al ERP. Hemos enviado el código de verificación OTP al correo autorizado (${targetEmail}). Ingrésalo manualmente para activar tu contraseña personal.`,
     );
   };
 
@@ -109,9 +107,11 @@ export function LoginModal({
       return;
     }
 
-    const code = generateOtpCode(cleanEmail);
+    generateOtpCode(cleanEmail);
     setOtpSent(true);
-    setDemoCodeHint(code);
+    setInfoMessage(
+      `Código OTP enviado al correo autorizado (${email.trim()}). Revisa tu bandeja e ingrésalo manualmente para continuar.`,
+    );
   };
 
   const handleVerifyOtp = (e: React.FormEvent) => {
@@ -363,15 +363,16 @@ export function LoginModal({
               </form>
             ) : (
               <form onSubmit={handleVerifyOtp} className="space-y-4">
-                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">
-                  <p className="font-semibold mb-1">¡Código OTP generado con éxito!</p>
-                  <p className="text-[11px] text-emerald-300/80">
-                    Código de verificación para{' '}
-                    <span className="font-mono font-bold text-white">{email}</span>:
+                <div
+                  role="status"
+                  data-testid="otp-sent-confirmation"
+                  className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200"
+                >
+                  <p className="font-semibold mb-1">Código OTP enviado a tu correo</p>
+                  <p className="text-[11px] text-emerald-300/85">
+                    Hemos enviado un código temporal de 6 dígitos al correo autorizado{' '}
+                    <span className="font-mono font-bold text-white">{email}</span>. Ingrésalo manualmente debajo.
                   </p>
-                  <div className="mt-2 text-center font-mono text-lg font-bold tracking-widest text-emerald-400 bg-[#040812] py-2 rounded-lg border border-emerald-500/30">
-                    {demoCodeHint}
-                  </div>
                 </div>
 
                 <div>
@@ -422,14 +423,9 @@ export function LoginModal({
           <form onSubmit={handleCompleteFirstTime} className="space-y-4">
             <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-200">
               <p className="font-semibold mb-1">Primer Ingreso de Usuario Pre-registrado</p>
-              <p className="text-[11px] text-blue-300/80">
-                Verifica tu código OTP e introduce la contraseña personal que usarás para acceder al ERP en el futuro:
+              <p className="text-[11px] text-blue-300/85">
+                Ingresa manualmente el código OTP enviado a tu correo autorizado ({email}) y define la contraseña personal que usarás para acceder al ERP.
               </p>
-              {demoCodeHint && (
-                <div className="mt-2 text-center font-mono text-lg font-bold tracking-widest text-blue-300 bg-[#040812] py-1.5 rounded-lg border border-blue-500/30">
-                  {demoCodeHint}
-                </div>
-              )}
             </div>
 
             <div>
